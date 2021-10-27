@@ -1,6 +1,3 @@
-API Reference
-=================
-
 mmdet.apis
 --------------
 .. automodule:: mmdet.apis
@@ -39,11 +36,6 @@ post_processing
 .. automodule:: mmdet.core.post_processing
     :members:
 
-optimizer
-^^^^^^^^^^
-.. automodule:: mmdet.core.optimizer
-    :members:
-
 utils
 ^^^^^^^^^^
 .. automodule:: mmdet.core.utils
@@ -60,6 +52,16 @@ datasets
 pipelines
 ^^^^^^^^^^
 .. automodule:: mmdet.datasets.pipelines
+    :members:
+
+samplers
+^^^^^^^^^^
+.. automodule:: mmdet.datasets.samplers
+    :members:
+
+api_wrappers
+^^^^^^^^^^^^
+.. automodule:: mmdet.datasets.api_wrappers
     :members:
 
 mmdet.models
@@ -98,4 +100,9 @@ losses
 utils
 ^^^^^^^^^^
 .. automodule:: mmdet.models.utils
+    :members:
+
+mmdet.utils
+--------------
+.. automodule::mmdet.utils
     :members:

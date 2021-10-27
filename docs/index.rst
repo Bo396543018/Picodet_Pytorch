@@ -15,6 +15,7 @@ Welcome to MMDetection's documentation!
 
    1_exist_data_model.md
    2_new_data_model.md
+   3_exist_data_new_model.md
 
 .. toctree::
    :maxdepth: 2
@@ -39,6 +40,12 @@ Welcome to MMDetection's documentation!
    faq.md
 
 .. toctree::
+   :caption: Switch Language
+
+   switch_language.md
+
+.. toctree::
+   :maxdepth: 1
    :caption: API Reference
 
    api.rst

@@ -1,6 +1,6 @@
 # 3: Train with customized models and standard datasets
 
-In this note, you will know how to train, test and inference your own customized models under standard datasets. We use the cityscapes dataset to train a customized Cascade Mask R-CNN R50 model as an example to demonstrate the whole process, which using [`AugFPN`](https://github.com/Gus-Guo/AugFPN) to replace the defalut `FPN` as neck, and add `Rotate` or `Translate` as training-time auto augmentation.
+In this note, you will know how to train, test and inference your own customized models under standard datasets. We use the cityscapes dataset to train a customized Cascade Mask R-CNN R50 model as an example to demonstrate the whole process, which using [`AugFPN`](https://github.com/Gus-Guo/AugFPN) to replace the default `FPN` as neck, and add `Rotate` or `Translate` as training-time auto augmentation.
 
 The basic steps are as below:
 
@@ -123,7 +123,7 @@ _base_ = [
 model = dict(
     # set None to avoid loading ImageNet pretrained backbone,
     # instead here we set `load_from` to load from COCO pretrained detectors.
-    pretrained=None,
+    backbone=dict(init_cfg=None),
     # replace neck from defaultly `FPN` to our new implemented module `AugFPN`
     neck=dict(
         type='AugFPN',
@@ -248,7 +248,7 @@ lr_config = dict(
     warmup_iters=500,
     warmup_ratio=0.001,
     step=[8])
-total_epochs = 10
+runner = dict(type='EpochBasedRunner', max_epochs=10)
 
 # We can use the COCO pretrained Cascade Mask R-CNN R50 model for more stable performance initialization
 load_from = 'https://download.openmmlab.com/mmdetection/v2.0/cascade_rcnn/cascade_mask_rcnn_r50_fpn_1x_coco/cascade_mask_rcnn_r50_fpn_1x_coco_20200203-9d4dcb24.pth'

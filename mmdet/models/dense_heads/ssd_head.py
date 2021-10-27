@@ -1,3 +1,4 @@
+# Copyright (c) OpenMMLab. All rights reserved.
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -214,8 +215,8 @@ class SSDHead(AnchorHead):
                 (num_total_anchors,).
             label_weights (Tensor): Label weights of each anchor with shape
                 (num_total_anchors,)
-            bbox_targets (Tensor): BBox regression targets of each anchor wight
-                shape (num_total_anchors, 4).
+            bbox_targets (Tensor): BBox regression targets of each anchor
+                weight shape (num_total_anchors, 4).
             bbox_weights (Tensor): BBox regression loss weights of each anchor
                 with shape (num_total_anchors, 4).
             num_total_samples (int): If sampling, num total samples equal to
@@ -325,12 +326,6 @@ class SSDHead(AnchorHead):
         all_anchors = []
         for i in range(num_images):
             all_anchors.append(torch.cat(anchor_list[i]))
-
-        # check NaN and Inf
-        assert torch.isfinite(all_cls_scores).all().item(), \
-            'classification scores become infinite or NaN!'
-        assert torch.isfinite(all_bbox_preds).all().item(), \
-            'bbox predications become infinite or NaN!'
 
         losses_cls, losses_bbox = multi_apply(
             self.loss_single,

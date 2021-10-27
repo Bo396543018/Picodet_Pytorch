@@ -1,3 +1,4 @@
+# Copyright (c) OpenMMLab. All rights reserved.
 import random
 import warnings
 
@@ -41,7 +42,7 @@ def train_detector(model,
                    validate=False,
                    timestamp=None,
                    meta=None):
-    logger = get_root_logger(cfg.log_level)
+    logger = get_root_logger(log_level=cfg.log_level)
 
     # prepare data loaders
     dataset = dataset if isinstance(dataset, (list, tuple)) else [dataset]
@@ -59,15 +60,18 @@ def train_detector(model,
                 f'{cfg.data.imgs_per_gpu} in this experiments')
         cfg.data.samples_per_gpu = cfg.data.imgs_per_gpu
 
+    runner_type = 'EpochBasedRunner' if 'runner' not in cfg else cfg.runner[
+        'type']
     data_loaders = [
         build_dataloader(
             ds,
             cfg.data.samples_per_gpu,
             cfg.data.workers_per_gpu,
-            # cfg.gpus will be ignored if distributed
-            len(cfg.gpu_ids),
+            # `num_gpus` will be ignored if distributed
+            num_gpus=len(cfg.gpu_ids),
             dist=distributed,
-            seed=cfg.seed) for ds in dataset
+            seed=cfg.seed,
+            runner_type=runner_type) for ds in dataset
     ]
 
     # put model on gpus
@@ -147,7 +151,10 @@ def train_detector(model,
         eval_cfg = cfg.get('evaluation', {})
         eval_cfg['by_epoch'] = cfg.runner['type'] != 'IterBasedRunner'
         eval_hook = DistEvalHook if distributed else EvalHook
-        runner.register_hook(eval_hook(val_dataloader, **eval_cfg))
+        # In this PR (https://github.com/open-mmlab/mmcv/pull/1193), the
+        # priority of IterTimerHook has been modified from 'NORMAL' to 'LOW'.
+        runner.register_hook(
+            eval_hook(val_dataloader, **eval_cfg), priority='LOW')
 
     # user-defined hooks
     if cfg.get('custom_hooks', None):

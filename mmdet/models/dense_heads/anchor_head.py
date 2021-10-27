@@ -1,3 +1,6 @@
+# Copyright (c) OpenMMLab. All rights reserved.
+import warnings
+
 import torch
 import torch.nn as nn
 from mmcv.runner import force_fp32
@@ -56,16 +59,12 @@ class AnchorHead(BaseDenseHead, BBoxTestMixin):
                      type='SmoothL1Loss', beta=1.0 / 9.0, loss_weight=1.0),
                  train_cfg=None,
                  test_cfg=None,
-                 init_cfg=dict(type='Normal', layers='Conv2d', std=0.01)):
+                 init_cfg=dict(type='Normal', layer='Conv2d', std=0.01)):
         super(AnchorHead, self).__init__(init_cfg)
         self.in_channels = in_channels
         self.num_classes = num_classes
         self.feat_channels = feat_channels
         self.use_sigmoid_cls = loss_cls.get('use_sigmoid', False)
-        # TODO better way to determine whether sample or not
-        self.sampling = loss_cls['type'] not in [
-            'FocalLoss', 'GHMC', 'QualityFocalLoss'
-        ]
         if self.use_sigmoid_cls:
             self.cls_out_channels = num_classes
         else:
@@ -82,10 +81,24 @@ class AnchorHead(BaseDenseHead, BBoxTestMixin):
         self.test_cfg = test_cfg
         if self.train_cfg:
             self.assigner = build_assigner(self.train_cfg.assigner)
-            # use PseudoSampler when sampling is False
-            if self.sampling and hasattr(self.train_cfg, 'sampler'):
+            if hasattr(self.train_cfg,
+                       'sampler') and self.train_cfg.sampler.type.split(
+                           '.')[-1] != 'PseudoSampler':
+                self.sampling = True
                 sampler_cfg = self.train_cfg.sampler
+                # avoid BC-breaking
+                if loss_cls['type'] in [
+                        'FocalLoss', 'GHMC', 'QualityFocalLoss'
+                ]:
+                    warnings.warn(
+                        'DeprecationWarning: Determining whether to sampling'
+                        'by loss type is deprecated, please delete sampler in'
+                        'your config when using `FocalLoss`, `GHMC`, '
+                        '`QualityFocalLoss` or other FocalLoss variant.')
+                    self.sampling = False
+                    sampler_cfg = dict(type='PseudoSampler')
             else:
+                self.sampling = False
                 sampler_cfg = dict(type='PseudoSampler')
             self.sampler = build_sampler(sampler_cfg, context=self)
         self.fp16_enabled = False
@@ -301,14 +314,15 @@ class AnchorHead(BaseDenseHead, BBoxTestMixin):
             tuple: Usually returns a tuple containing learning targets.
 
                 - labels_list (list[Tensor]): Labels of each level.
-                - label_weights_list (list[Tensor]): Label weights of each \
-                    level.
+                - label_weights_list (list[Tensor]): Label weights of each
+                  level.
                 - bbox_targets_list (list[Tensor]): BBox targets of each level.
                 - bbox_weights_list (list[Tensor]): BBox weights of each level.
-                - num_total_pos (int): Number of positive samples in all \
-                    images.
-                - num_total_neg (int): Number of negative samples in all \
-                    images.
+                - num_total_pos (int): Number of positive samples in all
+                  images.
+                - num_total_neg (int): Number of negative samples in all
+                  images.
+
             additional_returns: This function enables user-defined returns from
                 `self._get_targets_single`. These returns are currently refined
                 to properties at each feature map (i.e. having HxW dimension).
@@ -383,8 +397,8 @@ class AnchorHead(BaseDenseHead, BBoxTestMixin):
                 (N, num_total_anchors).
             label_weights (Tensor): Label weights of each anchor with shape
                 (N, num_total_anchors)
-            bbox_targets (Tensor): BBox regression targets of each anchor wight
-                shape (N, num_total_anchors, 4).
+            bbox_targets (Tensor): BBox regression targets of each anchor
+                weight shape (N, num_total_anchors, 4).
             bbox_weights (Tensor): BBox regression loss weights of each anchor
                 with shape (N, num_total_anchors, 4).
             num_total_samples (int): If sampling, num total samples equal to
