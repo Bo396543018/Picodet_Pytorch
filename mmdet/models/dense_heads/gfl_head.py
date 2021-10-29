@@ -471,7 +471,7 @@ class GFLHead(AnchorHead):
             ]
         return det_results
 
-    def get_targets(self,
+    def get_targets(self, # ==> target_assign
                     anchor_list,
                     valid_flag_list,
                     gt_bboxes_list,
@@ -535,7 +535,7 @@ class GFLHead(AnchorHead):
                 bbox_targets_list, bbox_weights_list, num_total_pos,
                 num_total_neg)
 
-    def _get_target_single(self,
+    def _get_target_single(self, # ==> target_assign_single_img
                            flat_anchors,
                            valid_flags,
                            num_level_anchors,
@@ -600,7 +600,7 @@ class GFLHead(AnchorHead):
                                               gt_bboxes)
 
         num_valid_anchors = anchors.shape[0]
-        bbox_targets = torch.zeros_like(anchors)
+        bbox_targets = torch.zeros_like(anchors) # anchors 在nanodet称为grid_cells
         bbox_weights = torch.zeros_like(anchors)
         labels = anchors.new_full((num_valid_anchors, ),
                                   self.num_classes,
