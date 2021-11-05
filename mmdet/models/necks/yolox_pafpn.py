@@ -148,9 +148,12 @@ class YOLOXPAFPN(BaseModule):
             out = self.bottom_up_blocks[idx](
                 torch.cat([downsample_feat, feat_height], 1))
             outs.append(out)
-
-        # out convs
-        for idx, conv in enumerate(self.out_convs):
-            outs[idx] = conv(outs[idx])
+        
+        
+        top_features = None
+        if self.num_features == 4:
+            top_features = self.first_top_conv(inputs[-1])
+            top_features = top_features + self.second_top_conv(outs[-1])
+            outs.append(top_features)
 
         return tuple(outs)
