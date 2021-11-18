@@ -76,32 +76,36 @@ class CSPPAN(BaseModule):
                  out_channels,
                  kernel_size=5,
                  num_features=3,
+                 expansion=0.5,
                  num_csp_blocks=1,
                  use_depthwise=True,
                  upsample_cfg=dict(scale_factor=2, mode='nearest'),
                  conv_cfg=None,
-                 norm_cfg=dict(type='BN', momentum=0.03, eps=0.001),
+                #  norm_cfg=dict(type='BN', momentum=0.03, eps=0.001),
+                 norm_cfg=dict(type='BN'),
                  act_cfg=dict(type='LeakyReLU'),
                  spatial_scales=[0.125, 0.0625, 0.03125]):
         
         super(CSPPAN, self).__init__()
         
         self.trans = Transformation_Module(in_channels, out_channels, act_cfg, conv_cfg, norm_cfg)
-        in_channels = [out_channels] * len(spatial_scales)
+        in_channels = [out_channels] * len(spatial_scales) # 统一成96
         self.in_channels = in_channels
         self.out_channels = out_channels
         self.spatial_scales = spatial_scales
         self.num_features = num_features
+        self.expansion = expansion
 
         conv = DepthwiseSeparableConvModule if use_depthwise else ConvModule
 
         if self.num_features == 4:
             self.first_top_conv = conv(
-                                    in_channels[0], in_channels[0], kernel_size, stride=2, 
-                                    conv_cfg=conv_cfg, norm_cfg=norm_cfg, act_cfg=act_cfg
+                                    in_channels[0], in_channels[0], kernel_size, padding=(kernel_size - 1) // 2,
+                                    stride=2, conv_cfg=conv_cfg, norm_cfg=norm_cfg, act_cfg=act_cfg
                                     )
             self.second_top_conv = conv(
-                                    in_channels[0], in_channels[0], kernel_size, stride=2, 
+                                    in_channels[0], in_channels[0], kernel_size, padding=(kernel_size - 1) // 2,
+                                    stride=2, 
                                     conv_cfg=conv_cfg, norm_cfg=norm_cfg, act_cfg=act_cfg
                                     )
             self.spatial_scales.append(self.spatial_scales[-1] / 2)
@@ -117,6 +121,7 @@ class CSPPAN(BaseModule):
                     in_channels[idx - 1] * 2,
                     in_channels[idx - 1],
                     kernel_size=kernel_size,
+                    expansion=self.expansion,
                     num_blocks=num_csp_blocks,
                     add_identity=False,
                     use_depthwise=use_depthwise,
@@ -143,6 +148,7 @@ class CSPPAN(BaseModule):
                     in_channels[idx] * 2,
                     in_channels[idx + 1],
                     kernel_size=kernel_size,
+                    expansion=self.expansion,
                     num_blocks=num_csp_blocks,
                     add_identity=False,
                     use_depthwise=use_depthwise,
@@ -161,20 +167,15 @@ class CSPPAN(BaseModule):
 
         assert len(inputs) == len(self.in_channels)
         inputs = self.trans(inputs)
-
         # top_down path
         inner_outs = [inputs[-1]]
         for idx in range(len(self.in_channels) - 1, 0, -1):
             feat_heigh = inner_outs[0]
             feat_low = inputs[idx - 1]
-
             upsample_feat = self.upsample(feat_heigh)
-
             inner_out = self.top_down_blocks[len(self.in_channels) - 1 - idx](
                 torch.cat([upsample_feat, feat_low], 1))
             inner_outs.insert(0, inner_out)
-
-
         # bottom-up path
         outs = [inner_outs[0]]
         for idx in range(len(self.in_channels) - 1):
@@ -190,5 +191,4 @@ class CSPPAN(BaseModule):
             top_features = self.first_top_conv(inputs[-1])
             top_features = top_features + self.second_top_conv(outs[-1])
             outs.append(top_features)
-
         return tuple(outs)

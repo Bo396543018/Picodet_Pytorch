@@ -1,8 +1,12 @@
 # Copyright (c) OpenMMLab. All rights reserved.
 import warnings
+import numpy as np
 
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
+
+import mmcv
 
 from ..builder import BBOX_ASSIGNERS
 from ..iou_calculators import bbox_overlaps
@@ -29,11 +33,15 @@ class SimOTAAssigner(BaseAssigner):
                  center_radius=2.5,
                  candidate_topk=10,
                  iou_weight=3.0,
-                 cls_weight=1.0):
+                 cls_weight=1.0,
+                 num_classes=80,
+                 use_vfl=False):
         self.center_radius = center_radius
         self.candidate_topk = candidate_topk
         self.iou_weight = iou_weight
         self.cls_weight = cls_weight
+        self.num_classes = num_classes
+        self.use_vfl = use_vfl
 
     def assign(self,
                pred_scores,
@@ -150,21 +158,34 @@ class SimOTAAssigner(BaseAssigner):
         num_valid = valid_decoded_bbox.size(0)
 
         pairwise_ious = bbox_overlaps(valid_decoded_bbox, gt_bboxes)
-        iou_cost = -torch.log(pairwise_ious + eps)
+        
+        if self.use_vfl:
+            gt_vfl_labels = gt_labels.squeeze(-1).unsqueeze(0).repeat(num_valid, 1).reshape(-1)
+            valid_pred_scores = valid_pred_scores.unsqueeze(1).repeat(1, num_gt, 1).reshape(-1, self.num_classes)
+            vfl_score = pairwise_ious.new_zeros(valid_pred_scores.shape)
+            vfl_score[torch.arange(0, vfl_score.shape[0]), gt_vfl_labels] = pairwise_ious.reshape(-1)
+            losses_vfl = varifocal_loss(
+                valid_pred_scores, vfl_score, use_sigmoid=False).reshape(num_valid, num_gt)
+            losses_giou = 1 - bbox_overlaps(
+                valid_decoded_bbox, gt_bboxes, mode='giou')
+            cost_matrix = (
+                losses_vfl * self.cls_weight + losses_giou * self.iou_weight +
+                (~is_in_boxes_and_center) * INF)
+        else:
+            iou_cost = -torch.log(pairwise_ious + eps)
+            gt_onehot_label = (
+                F.one_hot(gt_labels.to(torch.int64),
+                        pred_scores.shape[-1]).float().unsqueeze(0).repeat(
+                            num_valid, 1, 1))
 
-        gt_onehot_label = (
-            F.one_hot(gt_labels.to(torch.int64),
-                      pred_scores.shape[-1]).float().unsqueeze(0).repeat(
-                          num_valid, 1, 1))
+            valid_pred_scores = valid_pred_scores.unsqueeze(1).repeat(1, num_gt, 1)
+            cls_cost = F.binary_cross_entropy(
+                valid_pred_scores.sqrt_(), gt_onehot_label,
+                reduction='none').sum(-1)
 
-        valid_pred_scores = valid_pred_scores.unsqueeze(1).repeat(1, num_gt, 1)
-        cls_cost = F.binary_cross_entropy(
-            valid_pred_scores.sqrt_(), gt_onehot_label,
-            reduction='none').sum(-1)
-
-        cost_matrix = (
-            cls_cost * self.cls_weight + iou_cost * self.iou_weight +
-            (~is_in_boxes_and_center) * INF)
+            cost_matrix = (
+                cls_cost * self.cls_weight + iou_cost * self.iou_weight +
+                (~is_in_boxes_and_center) * INF)
 
         matched_pred_ious, matched_gt_inds = \
             self.dynamic_k_matching(
@@ -218,7 +239,6 @@ class SimOTAAssigner(BaseAssigner):
 
         # in boxes or in centers, shape: [num_priors]
         is_in_gts_or_centers = is_in_gts_all | is_in_cts_all
-
         # both in boxes and centers, shape: [num_fg, num_gt]
         is_in_boxes_and_centers = (
             is_in_gts[is_in_gts_or_centers, :]
@@ -252,3 +272,63 @@ class SimOTAAssigner(BaseAssigner):
         matched_pred_ious = (matching_matrix *
                              pairwise_ious).sum(1)[fg_mask_inboxes]
         return matched_pred_ious, matched_gt_inds
+
+
+@mmcv.jit(derivate=True, coderize=True)
+def varifocal_loss(pred,
+                   target,
+                   weight=None,
+                   alpha=0.75,
+                   gamma=2.0,
+                   use_sigmoid=True,
+                   iou_weighted=True,
+                   reduction='mean',
+                   avg_factor=None):
+    """`Varifocal Loss <https://arxiv.org/abs/2008.13367>`_
+
+    Args:
+        pred (torch.Tensor): The prediction with shape (N, C), C is the
+            number of classes
+        target (torch.Tensor): The learning target of the iou-aware
+            classification score with shape (N, C), C is the number of classes.
+        weight (torch.Tensor, optional): The weight of loss for each
+            prediction. Defaults to None.
+        alpha (float, optional): A balance factor for the negative part of
+            Varifocal Loss, which is different from the alpha of Focal Loss.
+            Defaults to 0.75.
+        gamma (float, optional): The gamma for calculating the modulating
+            factor. Defaults to 2.0.
+        iou_weighted (bool, optional): Whether to weight the loss of the
+            positive example with the iou target. Defaults to True.
+        reduction (str, optional): The method used to reduce the loss into
+            a scalar. Defaults to 'mean'. Options are "none", "mean" and
+            "sum".
+        avg_factor (int, optional): Average factor that is used to average
+            the loss. Defaults to None.
+    """
+    # pred and target should be of the same size
+    assert pred.size() == target.size()
+    if use_sigmoid:
+        pred_ = pred.sigmoid()
+    else:
+        pred_ = pred
+    target = target.type_as(pred)
+    if iou_weighted:
+        focal_weight = target * (target > 0.0).float() + \
+            alpha * (pred_ - target).abs().pow(gamma) * \
+            (target <= 0.0).float()
+    else:
+        focal_weight = (target > 0.0).float() + \
+            alpha * (pred_ - target).abs().pow(gamma) * \
+            (target <= 0.0).float()
+    
+    if use_sigmoid:
+        loss = F.binary_cross_entropy_with_logits(
+            pred, target, reduction='none') * focal_weight
+        loss = weight_reduce_loss(loss, weight, reduction, avg_factor)
+    else:
+        loss = F.binary_cross_entropy(
+            pred, target, reduction='none') * focal_weight
+        loss = loss.sum(axis=1)
+    
+    return loss
