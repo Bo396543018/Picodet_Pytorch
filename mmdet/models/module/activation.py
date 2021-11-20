@@ -22,6 +22,7 @@ activations = {
     "ELU": nn.ELU,
     "GELU": nn.GELU,
     "PReLU": nn.PReLU,
+    'HSwish': nn.Hardswish,
     None: nn.Identity,
 }
 
@@ -34,5 +35,7 @@ def act_layers(name):
         return nn.GELU()
     elif name == "PReLU":
         return nn.PReLU()
+    elif name == 'HSwish':
+        return nn.Hardswish()
     else:
         return activations[name](inplace=True)

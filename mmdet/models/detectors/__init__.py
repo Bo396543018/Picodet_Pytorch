@@ -40,6 +40,7 @@ from .yolof import YOLOF
 from .yolox import YOLOX
 
 from .nanodet import NanoDet
+from .picodet import PicoDet
 
 __all__ = [
     'ATSS', 'BaseDetector', 'SingleStageDetector', 'TwoStageDetector', 'RPN',
@@ -50,5 +51,5 @@ __all__ = [
     'VFNet', 'DETR', 'TridentFasterRCNN', 'SparseRCNN', 'SCNet', 'SOLO',
     'DeformableDETR', 'AutoAssign', 'YOLOF', 'CenterNet', 'YOLOX',
     'TwoStagePanopticSegmentor', 'PanopticFPN', 'QueryInst',
-    'NanoDet'
+    'NanoDet', 'PicoDet'
 ]
