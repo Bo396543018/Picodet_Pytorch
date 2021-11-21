@@ -30,5 +30,13 @@ bash tools/dist_test.sh configs/picodet/picodet_s_416_coco.py $MODEL_PATH 8 --ev
 
 ### Train Aligned
 
-ing. There are still some differences, 0.5 mAP lower
+#### Backbone Pretrained Weights
+- [ESNet_0.75](https://drive.google.com/file/d/1j0Bw8TyTnbwfmGihUdRZ0var4zFLe6W5/view?usp=sharing)
+#### Progress
+ing. 
+There are still some differences, 0.5 mAP lower
 
+
+| Model  | box AP | log | weights
+|:---------:|:-------:|:-------:|:-------:|
+|Picodet-s-416(reproduce-1120)| 30.1| [log](https://drive.google.com/file/d/1KfSAYQHxGNz0btn_BoGWq9nPK4t43T_U/view?usp=sharing)|[weights](https://drive.google.com/file/d/181GANlB8vnvQ2ZAL05ufo8quG0a7aZD8/view?usp=sharing) | 
