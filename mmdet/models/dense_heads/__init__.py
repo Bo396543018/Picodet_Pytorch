@@ -38,7 +38,6 @@ from .yolox_head import YOLOXHead
 
 from .nanodet_head import NanoDetHead
 from .picodet_head import PicoDetHead
-from .picodet_head_atss import PicoDetATSSHead
 
 __all__ = [
     'AnchorFreeHead', 'AnchorHead', 'GuidedAnchorHead', 'FeatureAdaption',
@@ -53,5 +52,5 @@ __all__ = [
     'SOLOHead', 'DecoupledSOLOHead', 'CenterNetHead', 'YOLOXHead',
     'DecoupledSOLOLightHead',
 
-    'NanoDetHead', 'PicoDetHead', 'PicoDetATSSHead'
+    'NanoDetHead', 'PicoDetHead'
 ]
