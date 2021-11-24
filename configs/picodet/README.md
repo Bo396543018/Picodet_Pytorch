@@ -37,6 +37,11 @@ ing.
 There are still some differences, 0.5 mAP lower
 
 
-| Model  | box AP | log | weights
-|:---------:|:-------:|:-------:|:-------:|
-|Picodet-s-416(reproduce-1120)| 30.1| [log](https://drive.google.com/file/d/1KfSAYQHxGNz0btn_BoGWq9nPK4t43T_U/view?usp=sharing)|[weights](https://drive.google.com/file/d/181GANlB8vnvQ2ZAL05ufo8quG0a7aZD8/view?usp=sharing) | 
+| Model  |config| box AP | log | weights
+|:---------:|:-------:|:-------:|:-------:|:-------:|
+|Picodet-s-416(reproduce-1120)| most aligned
+lr decay not consistency
+ema initialized with model param|30.1| [log](https://drive.google.com/file/d/1KfSAYQHxGNz0btn_BoGWq9nPK4t43T_U/view?usp=sharing)|[weights](https://drive.google.com/file/d/181GANlB8vnvQ2ZAL05ufo8quG0a7aZD8/view?usp=sharing) | 
+|Picodet-s-416(reproduce-1124)|
+lr decay not consistency
+ema initialized with zero|30.3| [log](https://drive.google.com/file/d/1TpOtKmgoZgiG_s5dR92zc1El6ObbYrTh/view?usp=sharing)|[weights](https://drive.google.com/file/d/14wckQPZtRMfXoXR2iwv-67aRkz8bLSvR/view?usp=sharing) | 
