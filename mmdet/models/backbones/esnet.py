@@ -25,6 +25,22 @@ import torch.nn as nn
 from ..builder import BACKBONES
 
 
+class HardSwish(nn.Module):
+    def __init__(self, inplace=True):
+        super(HardSwish, self).__init__()
+        self.relu6 = nn.ReLU6(inplace=inplace)
+
+    def forward(self, x):
+        return x * self.relu6(x+3) / 6
+
+class HardSigmoid(nn.Module):
+    def __init__(self, inplace=True):
+        super(HardSigmoid, self).__init__()
+        self.relu6 = nn.ReLU6(inplace=inplace)
+
+    def forward(self, x):
+        return (self.relu6(x+3)) / 6
+
 def make_divisible(v, divisor=16, min_value=None):
     if min_value is None:
         min_value = divisor
@@ -74,7 +90,7 @@ class ConvBNLayer(nn.Module):
         if self.act == "relu":
             self.activate = nn.ReLU()
         elif self.act == "hard_swish":
-            self.activate = nn.Hardswish()
+            self.activate = HardSwish() # nn.Hardswish() # nn.Hardswish()
 
 
     def forward(self, inputs):
@@ -102,7 +118,7 @@ class SEModule(nn.Module):
             kernel_size=1,
             stride=1,
             padding=0)
-        self.hardsigmoid = nn.Hardsigmoid()
+        self.hardsigmoid = HardSigmoid()# nn.Hardsigmoid()# 
 
     def forward(self, inputs):
         outputs = self.avg_pool(inputs)

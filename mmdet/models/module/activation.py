@@ -14,6 +14,16 @@
 
 import torch.nn as nn
 
+import torch.nn.functional as F
+
+class HardSwish(nn.Module):
+    def __init__(self, inplace=True):
+        super(HardSwish, self).__init__()
+        self.relu6 = nn.ReLU6(inplace=inplace)
+
+    def forward(self, x):
+        return x * self.relu6(x+3) / 6
+
 activations = {
     "ReLU": nn.ReLU,
     "LeakyReLU": nn.LeakyReLU,
@@ -36,6 +46,6 @@ def act_layers(name):
     elif name == "PReLU":
         return nn.PReLU()
     elif name == 'HSwish':
-        return nn.Hardswish()
+        return HardSwish()# nn.Hardswish()
     else:
         return activations[name](inplace=True)

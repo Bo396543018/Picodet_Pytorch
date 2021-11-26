@@ -193,6 +193,7 @@ class PicoDetHead(AnchorFreeHead):
             bbox_pred = gfl_reg(reg_feat)
 
         if torch.onnx.is_in_onnx_export():
+            assert cls_score.size()[-2:] == bbox_pred.size()[-2:]
             cls_score = (
                 torch.sigmoid(cls_score)
                 .reshape(1, self.num_classes, -1)
@@ -683,3 +684,35 @@ class PicoDetHead(AnchorFreeHead):
                                       strict, missing_keys, unexpected_keys,
                                       error_msgs)
   
+
+    @force_fp32(apply_to=('cls_scores', 'bbox_preds'))
+    def onnx_export(self,
+                    cls_scores,
+                    bbox_preds,
+                    score_factors=None,
+                    img_metas=None,
+                    with_nms=True):
+        """Transform network output for a batch into bbox predictions.
+
+        Args:
+            cls_scores (list[Tensor]): Box scores for each scale level
+                with shape (N, num_points * num_classes, H, W).
+            bbox_preds (list[Tensor]): Box energies / deltas for each scale
+                level with shape (N, num_points * 4, H, W).
+            score_factors (list[Tensor]): score_factors for each s
+                cale level with shape (N, num_points * 1, H, W).
+                Default: None.
+            img_metas (list[dict]): Meta information of each image, e.g.,
+                image size, scaling factor, etc. Default: None.
+            with_nms (bool): Whether apply nms to the bboxes. Default: True.
+
+        Returns:
+            tuple[Tensor, Tensor] | list[tuple]: When `with_nms` is True,
+            it is tuple[Tensor, Tensor], first tensor bboxes with shape
+            [N, num_det, 5], 5 arrange as (x1, y1, x2, y2, score)
+            and second element is class labels of shape [N, num_det].
+            When `with_nms` is False, first tensor is bboxes with
+            shape [N, num_det, 4], second tensor is raw score has
+            shape  [N, num_det, num_classes].
+        """
+        return cls_scores, bbox_preds
