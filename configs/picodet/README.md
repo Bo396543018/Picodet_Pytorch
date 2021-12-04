@@ -45,5 +45,4 @@ ing.
 |Picodet-s-416(reproduce-1124)|lr decay not consistency <br>ema initialized with zero|30.3| [log](https://drive.google.com/file/d/1TpOtKmgoZgiG_s5dR92zc1El6ObbYrTh/view?usp=sharing)|[weights](https://drive.google.com/file/d/14wckQPZtRMfXoXR2iwv-67aRkz8bLSvR/view?usp=sharing) | 
 |Picodet-m-416(reproduce-1128)|lr decay not consistency |34.2| [log](https://drive.google.com/file/d/1BWBcHj7SPytCValyjUTICNZ1paqXhRgC/view?usp=sharing)|[weights](https://drive.google.com/file/d/1NHoqetZGdZ0PwxWqMs7Jxgp-YTYInzpE/view?usp=sharing) | 
 |Picodet-s-320(reproduce-1128)|lr decay not consistency |26.7| [log](https://drive.google.com/file/d/1cXdvhVQsllRfGRBMLw3n3fCzHSyV1ZYO/view?usp=sharing)|[weights](https://drive.google.com/file/d/12I6RZoqVFA_RJmpC2Atdw71BIgvgCb4B/view?usp=sharing) | 
-
 |Picodet-l-640(reproduce-1201)|lr decay not consistency |40.5| [log](https://drive.google.com/file/d/1XsvF2LpsDA_vY3WgLmuh77cZt1OtDMYr/view?usp=sharing)|[weights](https://drive.google.com/file/d/1dqjoIB87iIVEuJih1khXyQRtM0UjMDe_/view?usp=sharing) | 
