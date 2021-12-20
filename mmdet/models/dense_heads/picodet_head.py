@@ -22,8 +22,7 @@ from mmdet.core import (MlvlPointGenerator, multi_apply, build_assigner, build_s
 from mmdet.core.utils import filter_scores_and_topk, select_single_mlvl
 
 from mmdet.core.bbox.iou_calculators.iou2d_calculator import bbox_overlaps
-from ..module.conv import ConvModule, DepthwiseConvModule
-from ..module.init_weights import normal_init
+from mmcv.cnn import ConvModule, DepthwiseSeparableConvModule
 from .gfl_head import Integral
 from ..builder import HEADS, build_loss
 from .anchor_free_head import AnchorFreeHead
@@ -34,7 +33,6 @@ class PicoDetHead(AnchorFreeHead):
     """
     Modified from GFL, use same loss functions but much lightweight convolution heads
     """
-
     def __init__(
         self,
         num_classes,
@@ -42,9 +40,10 @@ class PicoDetHead(AnchorFreeHead):
         feat_channels=96,
         stacked_convs=2,
         kernel_size=5,
-        share_cls_reg=False,
+        share_cls_reg=True,
         conv_type="DWConv",
         conv_cfg=None,
+        act_cfg=dict(type='HSwish'),
         norm_cfg=None,
         use_vfl=False,
         loss_cls=dict(
@@ -55,7 +54,6 @@ class PicoDetHead(AnchorFreeHead):
         loss_dfl=dict(type='DistributionFocalLoss', loss_weight=0.25),
         reg_max=7,
         strides=[8, 16, 32],
-        activation="LeakyReLU",
         sync_num_pos=True,
         init_cfg=dict(
             type='Normal',
@@ -71,8 +69,9 @@ class PicoDetHead(AnchorFreeHead):
         self.conv_cfg = conv_cfg
         self.reg_max = reg_max
         self.share_cls_reg = share_cls_reg
-        self.activation = activation
-        self.ConvModule = ConvModule if conv_type == "Conv" else DepthwiseConvModule
+        self.act_cfg = act_cfg
+        assert conv_type in ['DWConv', 'Conv'], 'conv_type should be one of DWConv or Conv'
+        self.ConvModule = ConvModule if conv_type == "Conv" else DepthwiseSeparableConvModule
         super(PicoDetHead, self).__init__(
             num_classes, in_channels, stacked_convs=stacked_convs, strides=strides,
             feat_channels=feat_channels, loss_cls=loss_cls, norm_cfg=norm_cfg, init_cfg=init_cfg, **kwargs)
@@ -112,13 +111,16 @@ class PicoDetHead(AnchorFreeHead):
                 for _ in self.strides
             ]
         )
-        # TODO: if
-        self.gfl_reg = nn.ModuleList(
-            [
-                nn.Conv2d(self.feat_channels, 4 * (self.reg_max + 1), 1, padding=0)
-                for _ in self.strides
-            ]
-        )
+        if not self.share_cls_reg:
+            self.gfl_reg = nn.ModuleList(
+                [
+                    nn.Conv2d(self.feat_channels, 4 * (self.reg_max + 1), 1, padding=0)
+                    for _ in self.strides
+                ]
+            )
+        else:
+            self.gfl_reg = [None] * len(self.strides)
+
     def _buid_not_shared_head(self):
         cls_convs = nn.ModuleList()
         reg_convs = nn.ModuleList()
@@ -131,9 +133,9 @@ class PicoDetHead(AnchorFreeHead):
                     self.kernel_size,
                     stride=1,
                     padding=(self.kernel_size - 1) // 2,
+                    act_cfg=self.act_cfg,
                     norm_cfg=self.norm_cfg,
                     bias=self.norm_cfg is None,
-                    activation=self.activation,
                 )
             )
             if not self.share_cls_reg:
@@ -144,27 +146,13 @@ class PicoDetHead(AnchorFreeHead):
                         self.kernel_size,
                         stride=1,
                         padding=(self.kernel_size - 1) // 2,
+                        act_cfg=self.act_cfg,
                         norm_cfg=self.norm_cfg,
                         bias=self.norm_cfg is None,
-                        activation=self.activation,
                     )
                 )
 
         return cls_convs, reg_convs
-
-    def init_weights(self):
-        for m in self.cls_convs.modules():
-            if isinstance(m, nn.Conv2d):
-                normal_init(m, std=0.01)
-        for m in self.reg_convs.modules():
-            if isinstance(m, nn.Conv2d):
-                normal_init(m, std=0.01)
-        # init cls head with confidence = 0.01
-        bias_cls = -4.595
-        for i in range(len(self.strides)):
-            normal_init(self.gfl_cls[i], std=0.01, bias=bias_cls)
-            normal_init(self.gfl_reg[i], std=0.01)
-        print("Finish initialize PicoDet Head.")
 
     def forward(self, feats):
         return multi_apply(
@@ -178,11 +166,13 @@ class PicoDetHead(AnchorFreeHead):
 
     def forward_single(self, x, cls_convs, reg_convs, gfl_cls, gfl_reg):
         cls_feat = x
-        reg_feat = x
         for cls_conv in cls_convs:
             cls_feat = cls_conv(cls_feat)
-        for reg_conv in reg_convs:
-            reg_feat = reg_conv(reg_feat)
+        
+        if not self.share_cls_reg:
+            reg_feat = x
+            for reg_conv in reg_convs:
+                reg_feat = reg_conv(reg_feat)
         if self.share_cls_reg:
             feat = gfl_cls(cls_feat)
             cls_score, bbox_pred = torch.split(
@@ -203,7 +193,6 @@ class PicoDetHead(AnchorFreeHead):
                 0, 2, 1
             )
         return cls_score, bbox_pred
-
 
     @force_fp32(apply_to=('cls_scores', 'bbox_preds'))
     def loss(self,
@@ -232,20 +221,21 @@ class PicoDetHead(AnchorFreeHead):
             gt_bboxes_ignore (None | list[Tensor]): specify which bounding
                 boxes can be ignored when computing the loss.
         """
+        assert len(cls_scores) == len(bbox_preds)
         num_imgs = len(img_metas)
-        
         num_level_anchors = [ 
                 featmap.shape[-2] * featmap.shape[-1] for featmap in cls_scores]
-                 
+
         featmap_sizes = [cls_score.shape[2:] for cls_score in cls_scores]
         mlvl_priors = self.prior_generator.grid_priors(
-            featmap_sizes, cls_scores[0].device, with_stride=True)
+            featmap_sizes, 
+            dtype=bbox_preds[0].dtype, 
+            device=bbox_preds[0].device,
+            with_stride=True) # anchor points
 
-        # 所有batch结果拼在了一起
         decode_bbox_preds = []
         center_and_strides = []
         for stride, bbox_pred, center_and_stride in zip(self.strides, bbox_preds, mlvl_priors):
-            # h w 2
             center_and_stride = center_and_stride.repeat(num_imgs, 1, 1)
             center_and_strides.append(center_and_stride)
             center_in_feature = center_and_stride.reshape(
@@ -254,7 +244,7 @@ class PicoDetHead(AnchorFreeHead):
             pred_corners = self.integral(bbox_pred)
             decode_bbox_pred = distance2bbox(
                 center_in_feature, pred_corners).reshape(num_imgs, -1, 4)
-            decode_bbox_preds.append(decode_bbox_pred * stride) # 将框的结果转换成xyxy,采用的是逐level转换
+            decode_bbox_preds.append(decode_bbox_pred * stride)
 
         flatten_cls_preds = [
             cls_pred.permute(0, 2, 3, 1).reshape(
@@ -266,131 +256,40 @@ class PicoDetHead(AnchorFreeHead):
         flatten_bboxes = torch.cat(decode_bbox_preds, dim=1)
         flatten_center_and_strides = torch.cat(center_and_strides, dim=1)
 
-        pos_num_l, label_l, label_weight_l, bbox_target_l = [], [], [], []
+        cls_reg_targets = self.get_targets(
+            flatten_cls_preds,
+            flatten_bboxes,
+            flatten_center_and_strides,
+            gt_bboxes,
+            gt_labels,
+            num_level_anchors)        
 
-        for flatten_cls_pred, flatten_center_and_stride, flatten_bbox, gt_bbox, gt_label \
-                    in zip(flatten_cls_preds.detach(), flatten_center_and_strides.detach(), \
-                        flatten_bboxes.detach(), gt_bboxes, gt_labels): # 逐图片
-            pos_num, label, label_weight, bbox_target = self._get_target_single(
-                flatten_cls_pred, flatten_center_and_stride, flatten_bbox, 
-                gt_bbox, gt_label)
-            pos_num_l.append(pos_num)
-            label_l.append(label)
-            label_weight_l.append(label_weight)
-            bbox_target_l.append(bbox_target)
-
-
-
-        center_and_strides_list = images_to_levels([flatten_cs for flatten_cs in flatten_center_and_strides], 
-                                                        num_level_anchors)
-        labels_list = images_to_levels(label_l, num_level_anchors)
-        label_weights_list = images_to_levels(label_weight_l,
-                                                    num_level_anchors)
-        bbox_targets_list = images_to_levels(bbox_target_l,
-                                                   num_level_anchors)
-
-        num_total_pos = sum([max(pos_num, 1) for pos_num in pos_num_l])        # sync num_pos across all gpus
-
+        labels_list, label_weights_list, bbox_targets_list,  \
+                    center_and_strides_list, num_total_pos = cls_reg_targets
         if self.sync_num_pos:
             num_pos_avg_per_gpu = reduce_mean(
                 labels_list[0].new_tensor(num_total_pos).float()).item()
             num_pos_avg_per_gpu = max(num_pos_avg_per_gpu, 1.0)
         else:
             num_pos_avg_per_gpu = num_total_pos
-        # 这里应该能用get_loss_single实现, 逐level
-        loss_bbox_list, loss_dfl_list, loss_cls_list, avg_factor = [], [], [], []
-        for cls_score, bbox_pred, center_and_strides, labels, label_weights, bbox_targets, stride in zip(
-                cls_scores, bbox_preds, center_and_strides_list, labels_list,
-                label_weights_list, bbox_targets_list, self.strides):
-            center_and_strides = center_and_strides.reshape(-1, 4)
-            cls_score = cls_score.permute(0, 2, 3, 1).reshape(
-                [-1, self.cls_out_channels]
-            )
-            bbox_pred = bbox_pred.permute(0, 2, 3, 1).reshape(
-                -1, 4 * (self.reg_max + 1)
-            )
-            bbox_targets = bbox_targets.reshape(-1, 4)
-            labels = labels.reshape(-1)
-            label_weights = label_weights.reshape(-1)
-
-            # FG cat_id: [0, num_classes -1], BG cat_id: num_classes
-            bg_class_ind = self.num_classes
-            # pos_inds = ((labels >= 0)
-            #             & (labels < bg_class_ind)).nonzero().squeeze(1)
-            pos_inds = torch.nonzero((labels >= 0)  & (labels < bg_class_ind)).squeeze(1)
-
-            if self.use_vfl:
-                score = label_weights.new_zeros(cls_score.shape)
-            else:
-                score = label_weights.new_zeros(labels.shape)
-
-            if num_total_pos > 0:
-                pos_bbox_targets = bbox_targets[pos_inds]
-                pos_bbox_pred = bbox_pred[pos_inds]
-                pos_centers = center_and_strides[:, :-2][pos_inds] / stride
-
-                weight_targets = cls_score.detach().sigmoid()
-                weight_targets = weight_targets.max(dim=1)[0][pos_inds]
-                pos_bbox_pred_corners = self.integral(pos_bbox_pred)
-                pos_decode_bbox_pred = distance2bbox(pos_centers,
-                                                    pos_bbox_pred_corners)
-                pos_decode_bbox_targets = pos_bbox_targets / stride
-                
-                pos_ious = bbox_overlaps(
-                        pos_decode_bbox_pred,
-                        pos_decode_bbox_targets.detach(),
-                        is_aligned=True).clamp(min=1e-6)
-                if self.use_vfl:
-                    pos_labels = labels[pos_inds]
-                    score[pos_inds, pos_labels] = pos_ious.clone().detach()
-                else:
-                    score[pos_inds] = pos_ious.clone().detach()
-                pred_corners = pos_bbox_pred.reshape(-1, self.reg_max + 1)
-                target_corners = bbox2distance(pos_centers,
-                                            pos_decode_bbox_targets,
-                                            self.reg_max).reshape(-1)
-                # regression loss
-                loss_bbox = self.loss_bbox(
-                    pos_decode_bbox_pred,
-                    pos_decode_bbox_targets.detach(),
-                    weight=weight_targets,
-                    avg_factor=1.0)
-                # dfl loss
-                loss_dfl = self.loss_dfl(
-                    pred_corners,
-                    target_corners,
-                    weight=weight_targets[:, None].expand(-1, 4).reshape(-1),
-                    avg_factor=4.0
-                )
-            else:
-                loss_bbox = bbox_pred.sum() * 0
-                loss_dfl = bbox_pred.sum() * 0
-                weight_targets = bbox_pred.new_tensor(0)
-            # cls (qfl) loss
-            if self.use_vfl:
-                loss_cls = self.loss_cls(
-                    cls_score, 
-                    score, 
-                    avg_factor=num_pos_avg_per_gpu)
-            else:
-                loss_cls = self.loss_cls(
-                    cls_score, (labels, score),
-                    weight=label_weights,
-                    avg_factor=num_pos_avg_per_gpu
-                )
-
-            loss_bbox_list.append(loss_bbox)
-            loss_dfl_list.append(loss_dfl)
-            loss_cls_list.append(loss_cls)
-            avg_factor.append(weight_targets.sum())
+        print(len(center_and_strides_list))
+        loss_bbox_list, loss_dfl_list, loss_cls_list, avg_factor = multi_apply(
+                  self.loss_single(
+                            cls_scores,
+                            bbox_preds,
+                            center_and_strides_list,
+                            labels_list,
+                            label_weights_list,
+                            bbox_targets_list,
+                            self.strides,
+                            num_pos_avg_per_gpu,
+                      ))
 
         avg_factor = sum(avg_factor)
         avg_factor = reduce_mean(avg_factor).clamp_(min=1).item()
         losses_bbox = list(map(lambda x: x / avg_factor, loss_bbox_list))
         losses_dfl = list(map(lambda x: x / avg_factor, loss_dfl_list))
         losses_cls = sum(loss_cls_list)
-  
-
         losses = dict(loss_cls=losses_cls, loss_bbox=losses_bbox, loss_dfl=losses_dfl)
 
         return losses
@@ -425,16 +324,9 @@ class PicoDetHead(AnchorFreeHead):
                                   self.num_classes,
                                   dtype=torch.long)
             label_weights = priors.new_zeros(num_bboxes, dtype=torch.float)
-
-
-            bbox_targets = torch.zeros_like(decoded_bboxes) # anchors 在nanodet称为grid_cells
-            # foreground_mask = cls_preds.new_zeros(num_priors).bool()
+            bbox_targets = torch.zeros_like(decoded_bboxes)
             return (0, labels, label_weights, bbox_targets)
 
-         # YOLOX uses center priors with 0.5 offset to assign targets,
-        # but use center priors without offset to regress bboxes.
-        # offset_priors = torch.cat(
-        #     [priors[:, :2] + priors[:, 2:] * 0.5, priors[:, 2:]], dim=-1)
         assign_result = self.assigner.assign(
             cls_preds.sigmoid(),
             priors, decoded_bboxes, gt_bboxes, gt_labels)
@@ -443,7 +335,7 @@ class PicoDetHead(AnchorFreeHead):
         pos_inds = sampling_result.pos_inds
         neg_inds = sampling_result.neg_inds
         num_pos_per_img = pos_inds.size(0)
-        bbox_targets = torch.zeros_like(decoded_bboxes) # anchors 在nanodet称为grid_cells
+        bbox_targets = torch.zeros_like(decoded_bboxes)
         bbox_weights = torch.zeros_like(decoded_bboxes)
         labels = priors.new_full((num_bboxes, ),
                                   self.num_classes,
@@ -469,6 +361,111 @@ class PicoDetHead(AnchorFreeHead):
             label_weights[neg_inds] = 1.0
 
         return (num_pos_per_img, labels, label_weights, bbox_targets)
+
+    def loss_single(self, cls_score, bbox_pred, center_and_strides, labels, label_weights, 
+                bbox_targets, stride, num_total_samples):
+        """Compute loss of a single scale level.
+        Args:
+            cls_score (Tensor): Box scores for each scale level
+                Has shape (N, num_points * num_classes, H, W).
+            bbox_pred (Tensor): Box 
+                level with shape (N, num_points * 4, H, W).
+            center_and_strides (Tensor): Box reference for each scale level with shape
+                (N, num_total_anchors, 4)
+            labels (Tensor): Labels of each anchors with shape
+                (N, num_total_points).
+            label_weights (Tensor): Label weights of each anchor with shape
+                (N, num_total_points)
+            bbox_targets (Tensor): BBox regression targets of each points
+            weight shape (N, num_total_points, 4).
+            stride (int): Stride for each scale level
+            num_total_samples (int) If sampling, num total samples equal to
+                the number of total points; Otherwise, it is the number of
+                positive points.
+        Returns:
+            dict[str, Tensor]: A dictionary of loss components   
+        """
+        print(len(center_and_strides))
+        print(center_and_strides[0].shape)
+        center_and_strides = center_and_strides.reshape(-1, 4)
+        cls_score = cls_score.permute(0, 2, 3, 1).reshape(
+            [-1, self.cls_out_channels]
+        )
+        bbox_pred = bbox_pred.permute(0, 2, 3, 1).reshape(
+            -1, 4 * (self.reg_max + 1)
+        )
+        bbox_targets = bbox_targets.reshape(-1, 4)
+        labels = labels.reshape(-1)
+        label_weights = label_weights.reshape(-1)
+
+        # FG cat_id: [0, num_classes -1], BG cat_id: num_classes
+        bg_class_ind = self.num_classes
+        # pos_inds = ((labels >= 0)
+        #             & (labels < bg_class_ind)).nonzero().squeeze(1)
+        pos_inds = torch.nonzero((labels >= 0)  & (labels < bg_class_ind)).squeeze(1)
+
+        if self.use_vfl:
+            score = label_weights.new_zeros(cls_score.shape)
+        else:
+            score = label_weights.new_zeros(labels.shape)
+
+        if num_total_samples > 0:
+            pos_bbox_targets = bbox_targets[pos_inds]
+            pos_bbox_pred = bbox_pred[pos_inds]
+            pos_centers = center_and_strides[:, :-2][pos_inds] / stride
+
+            weight_targets = cls_score.detach().sigmoid()
+            weight_targets = weight_targets.max(dim=1)[0][pos_inds]
+            pos_bbox_pred_corners = self.integral(pos_bbox_pred)
+            pos_decode_bbox_pred = distance2bbox(pos_centers,
+                                                pos_bbox_pred_corners)
+            pos_decode_bbox_targets = pos_bbox_targets / stride
+            
+            pos_ious = bbox_overlaps(
+                    pos_decode_bbox_pred,
+                    pos_decode_bbox_targets.detach(),
+                    is_aligned=True).clamp(min=1e-6)
+            if self.use_vfl:
+                pos_labels = labels[pos_inds]
+                score[pos_inds, pos_labels] = pos_ious.clone().detach()
+            else:
+                score[pos_inds] = pos_ious.clone().detach()
+            pred_corners = pos_bbox_pred.reshape(-1, self.reg_max + 1)
+            target_corners = bbox2distance(pos_centers,
+                                        pos_decode_bbox_targets,
+                                        self.reg_max).reshape(-1)
+            # regression loss
+            loss_bbox = self.loss_bbox(
+                pos_decode_bbox_pred,
+                pos_decode_bbox_targets.detach(),
+                weight=weight_targets,
+                avg_factor=1.0)
+            # dfl loss
+            loss_dfl = self.loss_dfl(
+                pred_corners,
+                target_corners,
+                weight=weight_targets[:, None].expand(-1, 4).reshape(-1),
+                avg_factor=4.0
+            )
+        else:
+            loss_bbox = bbox_pred.sum() * 0
+            loss_dfl = bbox_pred.sum() * 0
+            weight_targets = bbox_pred.new_tensor(0)
+        # cls (qfl) loss
+        if self.use_vfl:
+            loss_cls = self.loss_cls(
+                cls_score, 
+                score, 
+                avg_factor=num_total_samples)
+        else:
+            loss_cls = self.loss_cls(
+                cls_score, (labels, score),
+                weight=label_weights,
+                avg_factor=num_total_samples
+            )
+
+        
+        return loss_cls, loss_bbox, loss_dfl, weight_targets.sum()
 
     @force_fp32(apply_to=('cls_scores', 'bbox_preds'))
     def get_bboxes(self,
@@ -548,9 +545,77 @@ class PicoDetHead(AnchorFreeHead):
             result_list.append(results)
         return result_list
    
-    def get_targets(self, ):
+    def get_targets(self, 
+                    flatten_cls_preds,
+                    flatten_bboxes,
+                    flatten_center_and_strides,
+                    gt_bboxes_list,
+                    gt_labels_list,
+                    num_level_anchors,
+                    ):
+        """Compute regression and classification targets for points in
+        multiple images.
 
-        pass
+        Args:
+            anchor_list (list[list[Tensor]]): Multi level anchors of each
+                image. The outer list indicates images, and the inner list
+                corresponds to feature levels of the image. Each element of
+                the inner list is a tensor of shape (num_anchors, 4).
+            valid_flag_list (list[list[Tensor]]): Multi level valid flags of
+                each image. The outer list indicates images, and the inner list
+                corresponds to feature levels of the image. Each element of
+                the inner list is a tensor of shape (num_anchors, )
+            gt_bboxes_list (list[Tensor]): Ground truth bboxes of each image.
+            img_metas (list[dict]): Meta info of each image.
+            gt_bboxes_ignore_list (list[Tensor]): Ground truth bboxes to be
+                ignored.
+            gt_labels_list (list[Tensor]): Ground truth labels of each box.
+            label_channels (int): Channel of label.
+            unmap_outputs (bool): Whether to map outputs back to the original
+                set of anchors.
+
+        Returns:
+            tuple: Usually returns a tuple containing learning targets.
+
+                - labels_list (list[Tensor]): Labels of each level.
+                - label_weights_list (list[Tensor]): Label weights of each
+                  level.
+                - bbox_targets_list (list[Tensor]): BBox targets of each level.
+                - bbox_weights_list (list[Tensor]): BBox weights of each level.
+                - num_total_pos (int): Number of positive samples in all
+                  images.
+                - num_total_neg (int): Number of negative samples in all
+                  images.
+
+            additional_returns: This function enables user-defined returns from
+                `self._get_targets_single`. These returns are currently refined
+                to properties at each feature map (i.e. having HxW dimension).
+                The results will be concatenated after the end
+        """
+        pos_num_l, label_l, label_weight_l, bbox_target_l = [], [], [], []
+
+        for flatten_cls_pred, flatten_center_and_stride, flatten_bbox, gt_bbox, gt_label \
+                    in zip(flatten_cls_preds.detach(), flatten_center_and_strides.detach(), \
+                        flatten_bboxes.detach(), gt_bboxes_list, gt_labels_list): # 逐图片
+            pos_num, label, label_weight, bbox_target = self._get_target_single(
+                flatten_cls_pred, flatten_center_and_stride, flatten_bbox, 
+                gt_bbox, gt_label)
+            pos_num_l.append(pos_num)
+            label_l.append(label)
+            label_weight_l.append(label_weight)
+            bbox_target_l.append(bbox_target)
+
+        center_and_strides_list = images_to_levels([flatten_cs for flatten_cs in flatten_center_and_strides], 
+                                                        num_level_anchors)
+        labels_list = images_to_levels(label_l, num_level_anchors)
+        label_weights_list = images_to_levels(label_weight_l,
+                                                    num_level_anchors)
+        bbox_targets_list = images_to_levels(bbox_target_l,
+                                                num_level_anchors)
+
+        num_total_pos = sum([max(pos_num, 1) for pos_num in pos_num_l]) 
+
+        return (labels_list, label_weights_list, bbox_targets_list, center_and_strides_list, num_total_pos)
 
     def _get_bboxes_single(self,
                            cls_score_list,
@@ -684,14 +749,10 @@ class PicoDetHead(AnchorFreeHead):
                                       strict, missing_keys, unexpected_keys,
                                       error_msgs)
   
-
     @force_fp32(apply_to=('cls_scores', 'bbox_preds'))
     def onnx_export(self,
                     cls_scores,
-                    bbox_preds,
-                    score_factors=None,
-                    img_metas=None,
-                    with_nms=True):
+                    bbox_preds):
         """Transform network output for a batch into bbox predictions.
 
         Args:

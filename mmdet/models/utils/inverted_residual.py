@@ -1,9 +1,12 @@
 # Copyright (c) OpenMMLab. All rights reserved.
+import torch
+import torch.nn as nn
 import torch.utils.checkpoint as cp
 from mmcv.cnn import ConvModule
 from mmcv.runner import BaseModule
 
 from .se_layer import SELayer
+from .channel_shuffle import channel_shuffle
 
 
 class InvertedResidual(BaseModule):
@@ -115,6 +118,258 @@ class InvertedResidual(BaseModule):
                 return x + out
             else:
                 return out
+
+        if self.with_cp and x.requires_grad:
+            out = cp.checkpoint(_inner_forward, x)
+        else:
+            out = _inner_forward(x)
+
+        return out
+
+class EnhancedInvertedResidual(BaseModule):
+    """Enhanced InvertedResidual block for ESNet backbone, when stride=1.
+    Args:
+        in_channels (int): The input channels of this Module.
+        mid_channels (int): The input channels of the depthwise convolution.
+        out_channels (int): The output channels of this Module.
+        kernel_size (int): The kernel size of the depthwise convolution.
+            Default: 3.
+        stride (int): The stride of the depthwise convolution. Default: 1.
+        se_cfg (dict): Config dict for se layer. Default: None, which means no
+            se layer.
+        conv_cfg (dict): Config dict for convolution layer. Default: None,
+            which means using conv2d.
+        norm_cfg (dict): Config dict for normalization layer.
+            Default: dict(type='BN').
+        act_cfg (dict): Config dict for activation layer.
+            Default: dict(type='ReLU').
+        with_cp (bool): Use checkpoint or not. Using checkpoint will save some
+            memory while slowing down the training speed. Default: False.
+        init_cfg (dict or list[dict], optional): Initialization config dict.
+            Default: None
+
+    Returns:
+        Tensor: The output tensor.
+    """
+
+    def __init__(self,
+                 in_channels,
+                 mid_channels,
+                 out_channels,
+                 kernel_size=3,
+                 stride=1,
+                 se_cfg=None,
+                 conv_cfg=None,
+                 norm_cfg=dict(type='BN'),
+                 act_cfg=dict(type='ReLU'),
+                 with_cp=False,
+                 init_cfg=None):
+        super(EnhancedInvertedResidual, self).__init__(init_cfg)
+        self.stride = stride
+        self.with_cp = with_cp
+
+        assert stride in [1, 2], f'stride must in [1, 2]. ' \
+            f'But received {stride}.'
+        self.with_cp = with_cp
+        self.with_se = se_cfg is not None
+
+        self.conv_pw = ConvModule(
+                    in_channels=in_channels // 2,
+                    out_channels=mid_channels // 2,
+                    kernel_size=1,
+                    stride=1,
+                    padding=0,
+                    groups=1,
+                    conv_cfg=conv_cfg,
+                    norm_cfg=norm_cfg,
+                    act_cfg=act_cfg)
+        self.conv_dw = ConvModule(
+                    in_channels=mid_channels // 2,
+                    out_channels=mid_channels // 2,
+                    kernel_size=kernel_size,
+                    stride=self.stride,
+                    padding=1,
+                    groups=mid_channels // 2,
+                    conv_cfg=conv_cfg,
+                    norm_cfg=norm_cfg,
+                    act_cfg=None)
+        
+        if self.with_se:
+            self.se = SELayer(**se_cfg)
+
+        self.conv_linear = ConvModule(
+                    in_channels=mid_channels,
+                    out_channels=out_channels // 2,
+                    kernel_size=1,
+                    stride=1,
+                    padding=0,
+                    groups=1,
+                    conv_cfg=conv_cfg,
+                    norm_cfg=norm_cfg,
+                    act_cfg=act_cfg)
+    def forward(self, x):
+
+        def _inner_forward(x):
+            x1, x2 = torch.split(x, split_size_or_sections=[x.shape[1] // 2, x.shape[1] // 2], dim=1)
+            # x1, x2 = x.chunk(2, dim=1)
+            x2 = self.conv_pw(x2)
+            x3 = self.conv_dw(x2)
+            x3 = torch.cat([x2, x3], dim=1)
+            if self.with_se:
+                x3 = self.se(x3)
+            x3 = self.conv_linear(x3)
+            out = torch.cat([x1, x3], dim=1)
+            out = channel_shuffle(out, 2)
+            return out
+
+        if self.with_cp and x.requires_grad:
+            out = cp.checkpoint(_inner_forward, x)
+        else:
+            out = _inner_forward(x)
+
+        return out
+
+
+class EnhancedInvertedResidualDS(BaseModule):
+    """Enhanced InvertedResidual block for ESNet backbone, when stride=2.
+    Args:
+        in_channels (int): The input channels of this Module.
+        mid_channels (int): The input channels of the depthwise convolution.
+        out_channels (int): The output channels of this Module.
+        kernel_size (int): The kernel size of the depthwise convolution.
+            Default: 3.
+        stride (int): The stride of the depthwise convolution. Default: 1.
+        se_cfg (dict): Config dict for se layer. Default: None, which means no
+            se layer.
+        conv_cfg (dict): Config dict for convolution layer. Default: None,
+            which means using conv2d.
+        norm_cfg (dict): Config dict for normalization layer.
+            Default: dict(type='BN').
+        act_cfg (dict): Config dict for activation layer.
+            Default: dict(type='ReLU').
+        with_cp (bool): Use checkpoint or not. Using checkpoint will save some
+            memory while slowing down the training speed. Default: False.
+        init_cfg (dict or list[dict], optional): Initialization config dict.
+            Default: None
+
+    Returns:
+        Tensor: The output tensor.
+    """
+
+    def __init__(self,
+                 in_channels,
+                 mid_channels,
+                 out_channels,
+                 kernel_size=3,
+                 stride=1,
+                 se_cfg=None,
+                 conv_cfg=None,
+                 norm_cfg=dict(type='BN'),
+                 act_cfg=dict(type='ReLU'),
+                 with_cp=False,
+                 init_cfg=None):
+        super(EnhancedInvertedResidualDS, self).__init__(init_cfg)
+        self.stride = stride
+        self.with_cp = with_cp
+
+        assert stride in [1, 2], f'stride must in [1, 2]. ' \
+            f'But received {stride}.'
+        self.with_cp = with_cp
+        self.with_se = se_cfg is not None
+
+        # branch1
+        self.conv_dw_1 = ConvModule(
+                    in_channels=in_channels,
+                    out_channels=in_channels,
+                    kernel_size=3,
+                    stride=stride,
+                    padding=1,
+                    groups=in_channels,
+                    conv_cfg=conv_cfg,
+                    norm_cfg=norm_cfg,
+                    act_cfg=None)
+
+        self.conv_linear_1 = ConvModule(
+                    in_channels=in_channels,
+                    out_channels=out_channels // 2,
+                    kernel_size=1,
+                    stride=1,
+                    padding=0,
+                    groups=1,
+                    conv_cfg=conv_cfg,
+                    norm_cfg=norm_cfg,
+                    act_cfg=act_cfg)
+        # branch2
+        self.conv_pw_2 = ConvModule(
+            in_channels=in_channels,
+            out_channels=mid_channels // 2,
+            kernel_size=1,
+            stride=1,
+            padding=0,
+            groups=1,
+            conv_cfg=conv_cfg,
+            norm_cfg=norm_cfg,
+            act_cfg=act_cfg)
+
+        self.conv_dw_2 = ConvModule(
+            in_channels=mid_channels // 2,
+            out_channels=mid_channels // 2,
+            kernel_size=3,
+            stride=stride,
+            padding=1,
+            groups=mid_channels // 2,
+            conv_cfg=conv_cfg,
+            norm_cfg=norm_cfg,
+            act_cfg=None)
+
+        if self.with_se:
+            self.se = SELayer(**se_cfg)
+
+        self.conv_linear_2 = ConvModule(
+                    in_channels=mid_channels // 2,
+                    out_channels=out_channels // 2,
+                    kernel_size=1,
+                    stride=1,
+                    padding=0,
+                    groups=1,
+                    conv_cfg=conv_cfg,
+                    norm_cfg=norm_cfg,
+                    act_cfg=act_cfg)
+        self.conv_dw_mv1 = ConvModule(
+                    in_channels=out_channels,
+                    out_channels=out_channels,
+                    kernel_size=3,
+                    stride=1,
+                    padding=1,
+                    groups=out_channels,
+                    conv_cfg=conv_cfg,
+                    norm_cfg=norm_cfg,
+                    act_cfg=dict(type='HSwish'))
+        self.conv_pw_mv1 = ConvModule(
+                    in_channels=out_channels,
+                    out_channels=out_channels,
+                    kernel_size=1,
+                    stride=1,
+                    padding=0,
+                    groups=1,
+                    conv_cfg=conv_cfg,
+                    norm_cfg=norm_cfg,
+                    act_cfg=dict(type='HSwish'))
+
+    def forward(self, x):
+
+        def _inner_forward(x):
+            x1 = self.conv_dw_1(x)
+            x1 = self.conv_linear_1(x1)
+            x2 = self.conv_pw_2(x)
+            x2 = self.conv_dw_2(x2)
+            if self.with_se:
+                x2 = self.se(x2)
+            x2 = self.conv_linear_2(x2)
+            out = torch.cat([x1, x2], dim=1)
+            out = self.conv_dw_mv1(out)
+            out = self.conv_pw_mv1(out)
+            return out
 
         if self.with_cp and x.requires_grad:
             out = cp.checkpoint(_inner_forward, x)

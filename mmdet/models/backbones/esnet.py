@@ -11,262 +11,77 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
 from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
-from numbers import Integral
+import warnings
+
+from mmcv.cnn import ConvModule
+from mmcv.runner import BaseModule
 
 import torch
 import torch.nn as nn
+from torch.nn.modules.batchnorm import _BatchNorm
 
 
+from ..utils import EnhancedInvertedResidual, EnhancedInvertedResidualDS, make_divisible
 from ..builder import BACKBONES
 
 
-class HardSwish(nn.Module):
-    def __init__(self, inplace=True):
-        super(HardSwish, self).__init__()
-        self.relu6 = nn.ReLU6(inplace=inplace)
-
-    def forward(self, x):
-        return x * self.relu6(x+3) / 6
-
-class HardSigmoid(nn.Module):
-    def __init__(self, inplace=True):
-        super(HardSigmoid, self).__init__()
-        self.relu6 = nn.ReLU6(inplace=inplace)
-
-    def forward(self, x):
-        return (self.relu6(x+3)) / 6
-
-def make_divisible(v, divisor=16, min_value=None):
-    if min_value is None:
-        min_value = divisor
-    new_v = max(min_value, int(v + divisor / 2) // divisor * divisor)
-    if new_v < 0.9 * v:
-        new_v += divisor
-    return new_v
-
-def channel_shuffle(x, groups):
-    # type: (torch.Tensor, int) -> torch.Tensor
-    batchsize, num_channels, height, width = x.data.size()
-    channels_per_group = num_channels // groups
-
-    # reshape
-    x = x.view(batchsize, groups, channels_per_group, height, width)
-    x = torch.transpose(x, 1, 2).contiguous()
-
-    # flatten
-    x = x.view(batchsize, -1, height, width)
-
-    return x
-
-class ConvBNLayer(nn.Module):
-    def __init__(self,
-                 in_channels,
-                 out_channels,
-                 kernel_size,
-                 stride,
-                 padding,
-                 groups=1,
-                 act=None):
-        super(ConvBNLayer, self).__init__()
-
-        self.act = act
-
-        self._conv = nn.Conv2d(
-            in_channels=in_channels,
-            out_channels=out_channels,
-            kernel_size=kernel_size,
-            stride=stride,
-            padding=padding,
-            groups=groups,
-            bias=False)
-
-        self._batch_norm = nn.BatchNorm2d(out_channels)
-
-        if self.act == "relu":
-            self.activate = nn.ReLU()
-        elif self.act == "hard_swish":
-            self.activate = HardSwish() # nn.Hardswish() # nn.Hardswish()
-
-
-    def forward(self, inputs):
-        y = self._conv(inputs)
-        y = self._batch_norm(y)
-        if self.act is not None:
-            y = self.activate(y)
-        return y
-
-
-class SEModule(nn.Module):
-    def __init__(self, channel, reduction=4):
-        super(SEModule, self).__init__()
-        self.avg_pool = nn.AdaptiveAvgPool2d(1)
-        self.conv1 = nn.Conv2d(
-            in_channels=channel,
-            out_channels=channel // reduction,
-            kernel_size=1,
-            stride=1,
-            padding=0)
-        self.relu = nn.ReLU()
-        self.conv2 = nn.Conv2d(
-            in_channels=channel // reduction,
-            out_channels=channel,
-            kernel_size=1,
-            stride=1,
-            padding=0)
-        self.hardsigmoid = HardSigmoid()# nn.Hardsigmoid()# 
-
-    def forward(self, inputs):
-        outputs = self.avg_pool(inputs)
-        outputs = self.conv1(outputs)
-        outputs = self.relu(outputs)
-        outputs = self.conv2(outputs)
-        outputs = self.hardsigmoid(outputs)
-        return torch.multiply(inputs, outputs)
-
-
-class InvertedResidual(nn.Module):
-    def __init__(self,
-                 in_channels,
-                 mid_channels,
-                 out_channels,
-                 stride,
-                 act="relu"):
-        super(InvertedResidual, self).__init__()
-        self._conv_pw = ConvBNLayer(
-            in_channels=in_channels // 2,
-            out_channels=mid_channels // 2,
-            kernel_size=1,
-            stride=1,
-            padding=0,
-            groups=1,
-            act=act)
-        self._conv_dw = ConvBNLayer(
-            in_channels=mid_channels // 2,
-            out_channels=mid_channels // 2,
-            kernel_size=3,
-            stride=stride,
-            padding=1,
-            groups=mid_channels // 2,
-            act=None)
-        self._se = SEModule(mid_channels)
-
-        self._conv_linear = ConvBNLayer(
-            in_channels=mid_channels,
-            out_channels=out_channels // 2,
-            kernel_size=1,
-            stride=1,
-            padding=0,
-            groups=1,
-            act=act)
-
-    def forward(self, inputs):
-        x1, x2 = torch.split(inputs, split_size_or_sections=[inputs.shape[1] // 2, inputs.shape[1] // 2], dim=1)
-        x2 = self._conv_pw(x2)
-        x3 = self._conv_dw(x2)
-        x3 = torch.cat([x2, x3], dim=1)
-        x3 = self._se(x3)
-        x3 = self._conv_linear(x3)
-        out = torch.cat([x1, x3], dim=1)
-        return channel_shuffle(out, 2)
-
-
-class InvertedResidualDS(nn.Module):
-    def __init__(self,
-                 in_channels,
-                 mid_channels,
-                 out_channels,
-                 stride,
-                 act="relu"):
-        super(InvertedResidualDS, self).__init__()
-
-        # branch1
-        self._conv_dw_1 = ConvBNLayer(
-            in_channels=in_channels,
-            out_channels=in_channels,
-            kernel_size=3,
-            stride=stride,
-            padding=1,
-            groups=in_channels,
-            act=None)
-        self._conv_linear_1 = ConvBNLayer(
-            in_channels=in_channels,
-            out_channels=out_channels // 2,
-            kernel_size=1,
-            stride=1,
-            padding=0,
-            groups=1,
-            act=act)
-        # branch2
-        self._conv_pw_2 = ConvBNLayer(
-            in_channels=in_channels,
-            out_channels=mid_channels // 2,
-            kernel_size=1,
-            stride=1,
-            padding=0,
-            groups=1,
-            act=act)
-        self._conv_dw_2 = ConvBNLayer(
-            in_channels=mid_channels // 2,
-            out_channels=mid_channels // 2,
-            kernel_size=3,
-            stride=stride,
-            padding=1,
-            groups=mid_channels // 2,
-            act=None)
-        self._se = SEModule(mid_channels // 2)
-        self._conv_linear_2 = ConvBNLayer(
-            in_channels=mid_channels // 2,
-            out_channels=out_channels // 2,
-            kernel_size=1,
-            stride=1,
-            padding=0,
-            groups=1,
-            act=act)
-        self._conv_dw_mv1 = ConvBNLayer(
-            in_channels=out_channels,
-            out_channels=out_channels,
-            kernel_size=3,
-            stride=1,
-            padding=1,
-            groups=out_channels,
-            act="hard_swish")
-        self._conv_pw_mv1 = ConvBNLayer(
-            in_channels=out_channels,
-            out_channels=out_channels,
-            kernel_size=1,
-            stride=1,
-            padding=0,
-            groups=1,
-            act="hard_swish")
-
-    def forward(self, inputs):
-        x1 = self._conv_dw_1(inputs)
-        x1 = self._conv_linear_1(x1)
-        x2 = self._conv_pw_2(inputs)
-        x2 = self._conv_dw_2(x2)
-        x2 = self._se(x2)
-        x2 = self._conv_linear_2(x2)
-        out = torch.cat([x1, x2], dim=1)
-        out = self._conv_dw_mv1(out)
-        out = self._conv_pw_mv1(out)
-
-        return out
-
 @BACKBONES.register_module()
-class ESNet(nn.Module):
+class ESNet(BaseModule):
     def __init__(self,
                  model_size="m",
-                 activation="hard_swish",
-                 out_stages=[4, 11, 14],
-                 pretrain=None):
-        super(ESNet, self).__init__()
+                 out_indices=(4, 11, 14),
+                 frozen_stages=-1,
+                 conv_cfg=None,
+                 norm_cfg=dict(type='BN'),
+                 norm_eval=False,
+                 act_cfg=dict(type='HardSwish'),
+                 se_cfg=dict(conv_cfg=None, 
+                             ratio=4,
+                             act_cfg=(dict(type='ReLU'), dict(type='HSigmoid'))),
+                 with_cp=False,
+                 pretrained=None,
+                 init_cfg=None):
+        super(ESNet, self).__init__(init_cfg)
 
-        print("model size is ", model_size)
+        self.pretrained = pretrained
+        assert not (init_cfg and pretrained), \
+            'init_cfg and pretrained cannot be specified at the same time'
+        if isinstance(pretrained, str):
+            warnings.warn('DeprecationWarning: pretrained is deprecated, '
+                          'please use "init_cfg" instead')
+            self.init_cfg = dict(type='Pretrained', checkpoint=pretrained)
+        elif pretrained is None:
+            if init_cfg is None:
+                self.init_cfg = [
+                    dict(type='Kaiming', layer='Conv2d'),
+                    dict(
+                        type='Constant',
+                        val=1,
+                        layer=['_BatchNorm', 'GroupNorm'])
+                ]
+        else:
+            raise TypeError('pretrained must be a str or None')
+
+        self.model_size = model_size
+        self.out_indices = out_indices
+        # if not set(out_indices).issubset(set(range(0, 4))):
+        #     raise ValueError('out_indices must be a subset of range'
+        #                      f'(0, 4). But received {out_indices}')
+        if frozen_stages not in range(-1, 4):
+            raise ValueError('frozen_stages must be in range(-1, 8). '
+                             f'But received {frozen_stages}')
+        self.out_indices = out_indices
+        self.frozen_stages = frozen_stages
+        self.conv_cfg = conv_cfg
+        self.act_cfg = act_cfg
+        self.norm_cfg = norm_cfg
+        self.norm_eval = norm_eval
+        self.se_cfg = se_cfg
+        self.with_cp = with_cp
 
         if model_size == "s":
             self.scale = 0.75
@@ -280,31 +95,31 @@ class ESNet(nn.Module):
         else:
             raise NotImplementedError
 
-        if isinstance(out_stages, Integral):
-            out_stages = [out_stages]
-        self.feature_maps = out_stages
         stage_repeats = [3, 7, 3]
 
         stage_out_channels = [
-            -1, 24, make_divisible(128 * self.scale), make_divisible(256 * self.scale),
-            make_divisible(512 * self.scale), 1024
+            -1, 24, make_divisible(128 * self.scale, divisor=16), make_divisible(256 * self.scale, divisor=16),
+            make_divisible(512 * self.scale, divisor=16), 1024
         ]
 
         self._out_channels = []
         self._feature_idx = 0
         # 1. conv1
-        self._conv1 = ConvBNLayer(
+        self.conv1 = ConvModule(
             in_channels=3,
             out_channels=stage_out_channels[1],
             kernel_size=3,
             stride=2,
             padding=1,
-            act=activation)
-        self._max_pool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
+            conv_cfg=self.conv_cfg,
+            norm_cfg=self.norm_cfg,
+            act_cfg=self.act_cfg)
+        
+        self.max_pool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
         self._feature_idx += 1
 
         # 2. bottleneck sequences
-        self._block_list = []
+        self.block_list = []
         arch_idx = 0
         for stage_id, num_repeat in enumerate(stage_repeats):
             for i in range(num_repeat):
@@ -313,70 +128,68 @@ class ESNet(nn.Module):
                     int(stage_out_channels[stage_id + 2] * channels_scales),
                     divisor=8)
                 if i == 0:
-                    block = InvertedResidualDS(
+                    self.se_cfg['channels'] = mid_c // 2
+                    block = EnhancedInvertedResidualDS(
                         in_channels=stage_out_channels[stage_id + 1],
                         mid_channels=mid_c,
                         out_channels=stage_out_channels[stage_id + 2],
                         stride=2,
-                        act=activation)
+                        se_cfg=self.se_cfg,
+                        norm_cfg=self.norm_cfg,
+                        act_cfg=self.act_cfg,
+                        with_cp=self.with_cp,
+                        init_cfg=self.init_cfg)
                 else:
-                    block = InvertedResidual(
+                    self.se_cfg['channels'] = mid_c
+                    block = EnhancedInvertedResidual(
                         in_channels=stage_out_channels[stage_id + 2],
                         mid_channels=mid_c,
                         out_channels=stage_out_channels[stage_id + 2],
                         stride=1,
-                        act=activation)
+                        se_cfg=self.se_cfg,
+                        norm_cfg=self.norm_cfg,
+                        act_cfg=self.act_cfg,
+                        with_cp=self.with_cp,
+                        init_cfg=self.init_cfg)
+                
                 name = str(stage_id + 2) + '_' + str(i + 1)
                 setattr(self, name, block)
-                self._block_list.append(block)
+                self.block_list.append(block)
                 arch_idx += 1
                 self._feature_idx += 1
-                self._update_out_channels(stage_out_channels[stage_id + 2], self._feature_idx, self.feature_maps)
-
-                self._initialize_weights(pretrain)
+                self._update_out_channels(stage_out_channels[stage_id + 2], self._feature_idx, self.out_indices)
 
     def _update_out_channels(self, channel, feature_idx, feature_maps):
         if feature_idx in feature_maps:
             self._out_channels.append(channel)
 
     def forward(self, x):
-        y = self._conv1(x)
-        y = self._max_pool(y)
+        out = self.conv1(x)
+        out = self.max_pool(out)
         outs = []
-        for i, inv in enumerate(self._block_list):
-            y = inv(y)
-            if i + 2 in self.feature_maps:
-                outs.append(y)
+        for i, block in enumerate(self.block_list):
+            out = block(out)
+            if i + 2 in self.out_indices:
+                outs.append(out)
         return outs
 
-    def _initialize_weights(self, pretrain=True):
-        print("init weights...")
-        for name, m in self.named_modules():
-            if isinstance(m, nn.Conv2d):
-                nn.init.normal_(m.weight, 0, 1.0 / m.weight.shape[1])
-                if m.bias is not None:
-                    nn.init.constant_(m.bias, 0)
-            elif isinstance(m, nn.BatchNorm2d):
-                nn.init.constant_(m.weight, 1)
-                if m.bias is not None:
-                    nn.init.constant_(m.bias, 0.0001)
-                nn.init.constant_(m.running_mean, 0)
-        if pretrain:
-            pretrained_state_dict = torch.load(pretrain)
-            print("=> loading pretrained model {}".format(pretrain))
-            self.load_state_dict(pretrained_state_dict, strict=False)
+    def _freeze_stages(self):
+        if self.frozen_stages >= 0:
+            for param in self.conv1.parameters():
+                param.requires_grad = False
+        for i in range(1, self.frozen_stages + 1):
+            layer = getattr(self, f'layer{i}')
+            layer.eval()
+            for param in layer.parameters():
+                param.requires_grad = False
 
-
-if __name__ == "__main__":
-    x = torch.zeros((1, 3, 224, 224))
-    model = ESNet(model_size='m')
-    print(model)
-
-    out = model(x)
-
-    print([sub.shape for sub in out]) # out channels
-
-    # out channels
-    # s: [96, 192, 384]
-    # m: [128, 256, 512]
-    # l: [160, 320, 640]
+    def train(self, mode=True):
+        """Convert the model into training mode while keep normalization layer
+        frozen."""
+        super(ESNet, self).train(mode)
+        self._freeze_stages()
+        if mode and self.norm_eval:
+            for m in self.modules():
+                # trick: eval have effect on BatchNorm only
+                if isinstance(m, _BatchNorm):
+                    m.eval()
