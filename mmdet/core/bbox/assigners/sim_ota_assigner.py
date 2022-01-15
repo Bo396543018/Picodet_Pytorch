@@ -27,6 +27,9 @@ class SimOTAAssigner(BaseAssigner):
             iou cost. Default 3.0.
         cls_weight (int | float, optional): The scale factor for classification
             cost. Default 1.0.
+        num_classes (int): The number
+        use_vfl (bool): Whether to use varifocal loss to calculate classification 
+            cost. Default False.
     """
 
     def __init__(self,
