@@ -29,6 +29,8 @@ from ..utils import CSPLayer
 
 class Transformation_Module(nn.Module):
     """Tranform channel dimension of backbone to identical number
+
+    Args:
     """
 
     def __init__(self,
@@ -81,7 +83,6 @@ class CSPPAN(BaseModule):
                  use_depthwise=True,
                  upsample_cfg=dict(scale_factor=2, mode='nearest'),
                  conv_cfg=None,
-                #  norm_cfg=dict(type='BN', momentum=0.03, eps=0.001),
                  norm_cfg=dict(type='BN'),
                  act_cfg=dict(type='LeakyReLU'),
                  spatial_scales=[0.125, 0.0625, 0.03125]):
@@ -89,7 +90,7 @@ class CSPPAN(BaseModule):
         super(CSPPAN, self).__init__()
         
         self.trans = Transformation_Module(in_channels, out_channels, act_cfg, conv_cfg, norm_cfg)
-        in_channels = [out_channels] * len(spatial_scales) # 统一成96
+        in_channels = [out_channels] * len(spatial_scales) 
         self.in_channels = in_channels
         self.out_channels = out_channels
         self.spatial_scales = spatial_scales

@@ -1,18 +1,14 @@
 # Copyright (c) OpenMMLab. All rights reserved.
 import warnings
-import numpy as np
 
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
-
 import mmcv
 
 from ..builder import BBOX_ASSIGNERS
 from ..iou_calculators import bbox_overlaps
 from .assign_result import AssignResult
 from .base_assigner import BaseAssigner
-
 
 @BBOX_ASSIGNERS.register_module()
 class SimOTAAssigner(BaseAssigner):
@@ -27,7 +23,8 @@ class SimOTAAssigner(BaseAssigner):
             iou cost. Default 3.0.
         cls_weight (int | float, optional): The scale factor for classification
             cost. Default 1.0.
-        num_classes (int): The number
+        num_classes (int):  Number of categories. Default 80 classes for 
+            COCO dataset.
         use_vfl (bool): Whether to use varifocal loss to calculate classification 
             cost. Default False.
     """
@@ -138,7 +135,13 @@ class SimOTAAssigner(BaseAssigner):
         assigned_gt_inds = decoded_bboxes.new_full((num_bboxes, ),
                                                    0,
                                                    dtype=torch.long)
-        if num_gt == 0 or num_bboxes == 0:
+        valid_mask, is_in_boxes_and_center = self.get_in_gt_and_in_center_info(
+            priors, gt_bboxes)
+        valid_decoded_bbox = decoded_bboxes[valid_mask]
+        valid_pred_scores = pred_scores[valid_mask]
+        num_valid = valid_decoded_bbox.size(0)
+
+        if num_gt == 0 or num_bboxes == 0 or num_valid == 0:
             # No ground truth or boxes, return empty assignment
             max_overlaps = decoded_bboxes.new_zeros((num_bboxes, ))
             if num_gt == 0:
@@ -152,13 +155,6 @@ class SimOTAAssigner(BaseAssigner):
                                                           dtype=torch.long)
             return AssignResult(
                 num_gt, assigned_gt_inds, max_overlaps, labels=assigned_labels)
-
-        valid_mask, is_in_boxes_and_center = self.get_in_gt_and_in_center_info(
-            priors, gt_bboxes)
-
-        valid_decoded_bbox = decoded_bboxes[valid_mask]
-        valid_pred_scores = pred_scores[valid_mask]
-        num_valid = valid_decoded_bbox.size(0)
 
         pairwise_ious = bbox_overlaps(valid_decoded_bbox, gt_bboxes)
         
@@ -176,6 +172,7 @@ class SimOTAAssigner(BaseAssigner):
                 (~is_in_boxes_and_center) * INF)
         else:
             iou_cost = -torch.log(pairwise_ious + eps)
+
             gt_onehot_label = (
                 F.one_hot(gt_labels.to(torch.int64),
                         pred_scores.shape[-1]).float().unsqueeze(0).repeat(
@@ -242,6 +239,7 @@ class SimOTAAssigner(BaseAssigner):
 
         # in boxes or in centers, shape: [num_priors]
         is_in_gts_or_centers = is_in_gts_all | is_in_cts_all
+
         # both in boxes and centers, shape: [num_fg, num_gt]
         is_in_boxes_and_centers = (
             is_in_gts[is_in_gts_or_centers, :]
@@ -276,7 +274,6 @@ class SimOTAAssigner(BaseAssigner):
         matched_pred_ious = (matching_matrix *
                              pairwise_ious).sum(1)[fg_mask_inboxes]
         return matched_pred_ious, matched_gt_inds
-
 
 @mmcv.jit(derivate=True, coderize=True)
 def varifocal_loss(pred,
@@ -316,7 +313,7 @@ def varifocal_loss(pred,
         pred_ = pred.sigmoid()
     else:
         pred_ = pred
-    target = target.type_as(pred)
+    target = target.type_as(pred_)
     if iou_weighted:
         focal_weight = target * (target > 0.0).float() + \
             alpha * (pred_ - target).abs().pow(gamma) * \
@@ -325,7 +322,6 @@ def varifocal_loss(pred,
         focal_weight = (target > 0.0).float() + \
             alpha * (pred_ - target).abs().pow(gamma) * \
             (target <= 0.0).float()
-    
     if use_sigmoid:
         loss = F.binary_cross_entropy_with_logits(
             pred, target, reduction='none') * focal_weight
@@ -334,5 +330,4 @@ def varifocal_loss(pred,
         loss = F.binary_cross_entropy(
             pred, target, reduction='none') * focal_weight
         loss = loss.sum(axis=1)
-    
     return loss

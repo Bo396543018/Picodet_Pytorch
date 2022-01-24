@@ -21,27 +21,6 @@ model = dict(
         num_features=4,
         expansion=1,
         num_csp_blocks=1),
-    # bbox_head=dict(
-    #     type='PicoDetHead',
-    #     num_classes=80,
-    #     in_channels=96,
-    #     stacked_convs=2,
-    #     feat_channels=96,
-    #     share_cls_reg=True,
-    #     reg_max=7,
-    #     activation='HSwish',
-    #     strides=[8, 16, 32, 64],
-    #     norm_cfg=dict(type='BN', requires_grad=True),
-    #     use_vfl=True,
-    #     loss_cls=dict(
-    #         type='VarifocalLoss',
-    #         use_sigmoid=True,
-    #         alpha=0.75,
-    #         gamma=2.0,
-    #         iou_weighted=True,
-    #         loss_weight=1.0),
-    #     loss_dfl=dict(type='DistributionFocalLoss', loss_weight=0.25),
-    #     loss_bbox=dict(type='GIoULoss', loss_weight=2.0)),
     bbox_head=dict(
         type='PicoDetHead',
         num_classes=80,
@@ -50,7 +29,7 @@ model = dict(
         stacked_convs=2,
         kernel_size=5,
         share_cls_reg=True,
-        conv_type="DWConv",
+        use_depthwise=True,
         reg_max=7,
         act_cfg=dict(type='HSwish'),
         strides=[8, 16, 32, 64],
@@ -119,6 +98,7 @@ test_pipeline = [
 data = dict(
     samples_per_gpu=128,
     workers_per_gpu=8,
+    persistent_workers=True,
     train=dict(
         type=dataset_type,
         ann_file=data_root + 'annotations/instances_train2017.json',
@@ -177,5 +157,5 @@ workflow = [('train', 1)]
 
 
 
-work_dir = '/mnt/Models/coco/1225_picodet_s_320_aligned_mmdet'
+work_dir = '/mnt/Models/coco/0108_picodet_s_320_aligned_mmdet_retrained'
 

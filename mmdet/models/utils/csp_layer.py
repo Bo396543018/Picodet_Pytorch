@@ -16,6 +16,8 @@ class DarknetBottleneck(BaseModule):
     Args:
         in_channels (int): The input channels of this Module.
         out_channels (int): The output channels of this Module.
+        kernel_size (int): The kernel size of the convolution.
+            Default: 1.
         expansion (int): The kernel size of the convolution. Default: 0.5
         add_identity (bool): Whether to add identity to the out.
             Default: True
@@ -79,6 +81,8 @@ class CSPLayer(BaseModule):
     Args:
         in_channels (int): The input channels of the CSP layer.
         out_channels (int): The output channels of the CSP layer.
+        kernel_size (int): The kernel size of the convolution.
+            Default: 1.
         expand_ratio (float): Ratio to adjust the number of channels of the
             hidden layer. Default: 0.5
         num_blocks (int): Number of blocks. Default: 1

@@ -20,10 +20,8 @@ import warnings
 from mmcv.cnn import ConvModule
 from mmcv.runner import BaseModule
 
-import torch
 import torch.nn as nn
 from torch.nn.modules.batchnorm import _BatchNorm
-
 
 from ..utils import EnhancedInvertedResidual, EnhancedInvertedResidualDS, make_divisible
 from ..builder import BACKBONES
@@ -31,16 +29,53 @@ from ..builder import BACKBONES
 
 @BACKBONES.register_module()
 class ESNet(BaseModule):
+    """Enhanced ShuffleNet used in PicoDet
+    
+    Args:
+        model_size (str) Model size of ESNet.
+        out_indicts: (Sequence[int]): Output from which stages.
+            Default: (4, 11, 14).
+        frozen_stages (int): Stages to be frozen (stop grad and set eval
+            mode). -1 means not freezing any parameters. Default: -1.
+        conv_cfg (dict): Config dict for convolution layer. Default: None.
+        norm_cfg (dict): Dictionary to construct and config norm layer.
+            Default: dict(type='BN', requires_grad=True).
+        act_cfg (dict): Config dict for activation layer.
+            Default: dict(type='LeakyReLU', negative_slope=0.1).
+        norm_eval (bool): Whether to set norm layers to eval mode, namely,
+            freeze running stats (mean and var). Note: Effect on Batch Norm
+            and its variants only.
+        se_cfg (dict): Config dict for squeeze and excitation layer.
+            Default: dict(conv_cfg=None, ratio=4,
+                          act_cfg=(dict(type='ReLU'), dict(type='HSigmoid'))).
+        with_cp (bool): Use checkpoint or not. Using checkpoint will save some
+            memory while slowing down the training speed. Default: False.
+        pretrained (str, optional): model pretrained path. Default: None
+        init_cfg (dict or list[dict], optional): Initialization config dict.
+            Default: None
+    """
+    # Parameters to build layers
+    arch_settings = {
+        's': {'scale': 0.75,
+            'ratio': [0.875, 0.5, 0.5, 0.5, 0.625, 0.5, 0.625,
+                      0.5, 0.5, 0.5, 0.5, 0.5, 0.5]},
+        'm': {'scale': 1.0,
+            'ratio': [0.875, 0.5, 1.0, 0.625, 0.5, 0.75, 0.625, 
+                      0.625, 0.5, 0.625, 1.0, 0.625, 0.75]},
+        'l': {'scale': 1.25,
+            'ratio': [0.875, 0.5, 1.0, 0.625, 0.5, 0.75, 0.625, 
+                    0.625, 0.5, 0.625, 1.0, 0.625, 0.75]},
+    }
+    stage_repeats = [3, 7, 3]
     def __init__(self,
                  model_size="m",
-                 out_indices=(4, 11, 14),
+                 out_indices=(2, 9, 12),
                  frozen_stages=-1,
                  conv_cfg=None,
-                 norm_cfg=dict(type='BN'),
-                 norm_eval=False,
+                 norm_cfg=dict(type='BN', requires_grad=True),
                  act_cfg=dict(type='HardSwish'),
-                 se_cfg=dict(conv_cfg=None, 
-                             ratio=4,
+                 norm_eval=False,
+                 se_cfg=dict(conv_cfg=None, ratio=4,
                              act_cfg=(dict(type='ReLU'), dict(type='HSigmoid'))),
                  with_cp=False,
                  pretrained=None,
@@ -67,12 +102,14 @@ class ESNet(BaseModule):
             raise TypeError('pretrained must be a str or None')
 
         self.model_size = model_size
+        assert model_size in ['s', 'm', 'l'], 'invalid model_size {}, \
+                select model size of {}'.format(model_size, list(self.arch_settings.keys()))
         self.out_indices = out_indices
-        # if not set(out_indices).issubset(set(range(0, 4))):
-        #     raise ValueError('out_indices must be a subset of range'
-        #                      f'(0, 4). But received {out_indices}')
+        if not set(out_indices).issubset(set(range(1, 15))):
+            raise ValueError('out_indices must be a subset of range'
+                             f'[1, 15). But received {out_indices}')
         if frozen_stages not in range(-1, 4):
-            raise ValueError('frozen_stages must be in range(-1, 8). '
+            raise ValueError('frozen_stages must be in range(-1, 4). '
                              f'But received {frozen_stages}')
         self.out_indices = out_indices
         self.frozen_stages = frozen_stages
@@ -83,19 +120,8 @@ class ESNet(BaseModule):
         self.se_cfg = se_cfg
         self.with_cp = with_cp
 
-        if model_size == "s":
-            self.scale = 0.75
-            self.channel_ratio = [0.875, 0.5, 0.5, 0.5, 0.625, 0.5, 0.625, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5]
-        elif model_size == "m":
-            self.scale = 1.0
-            self.channel_ratio = [0.875, 0.5, 1.0, 0.625, 0.5, 0.75, 0.625, 0.625, 0.5, 0.625, 1.0, 0.625, 0.75]
-        elif model_size == "l":
-            self.scale = 1.25
-            self.channel_ratio = [0.875, 0.5, 1.0, 0.625, 0.5, 0.75, 0.625, 0.625, 0.5, 0.625, 1.0, 0.625, 0.75]
-        else:
-            raise NotImplementedError
-
-        stage_repeats = [3, 7, 3]
+        self.scale = self.arch_settings[model_size]['scale']
+        self.channel_ratio = self.arch_settings[model_size]['ratio']
 
         stage_out_channels = [
             -1, 24, make_divisible(128 * self.scale, divisor=16), make_divisible(256 * self.scale, divisor=16),
@@ -116,12 +142,10 @@ class ESNet(BaseModule):
             act_cfg=self.act_cfg)
         
         self.max_pool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
-        self._feature_idx += 1
-
         # 2. bottleneck sequences
         self.block_list = []
         arch_idx = 0
-        for stage_id, num_repeat in enumerate(stage_repeats):
+        for stage_id, num_repeat in enumerate(self.stage_repeats):
             for i in range(num_repeat):
                 channels_scales = self.channel_ratio[arch_idx]
                 mid_c = make_divisible(
@@ -156,12 +180,6 @@ class ESNet(BaseModule):
                 setattr(self, name, block)
                 self.block_list.append(block)
                 arch_idx += 1
-                self._feature_idx += 1
-                self._update_out_channels(stage_out_channels[stage_id + 2], self._feature_idx, self.out_indices)
-
-    def _update_out_channels(self, channel, feature_idx, feature_maps):
-        if feature_idx in feature_maps:
-            self._out_channels.append(channel)
 
     def forward(self, x):
         out = self.conv1(x)
@@ -169,7 +187,7 @@ class ESNet(BaseModule):
         outs = []
         for i, block in enumerate(self.block_list):
             out = block(out)
-            if i + 2 in self.out_indices:
+            if i in self.out_indices:
                 outs.append(out)
         return outs
 
@@ -178,10 +196,13 @@ class ESNet(BaseModule):
             for param in self.conv1.parameters():
                 param.requires_grad = False
         for i in range(1, self.frozen_stages + 1):
-            layer = getattr(self, f'layer{i}')
-            layer.eval()
-            for param in layer.parameters():
-                param.requires_grad = False
+
+            block_num = self.stage_repeats[i]
+            for num in range(block_num):
+                layer = getattr(self, f'{i + 1}_{num + 1}')
+                layer.eval()
+                for param in layer.parameters():
+                    param.requires_grad = False
 
     def train(self, mode=True):
         """Convert the model into training mode while keep normalization layer

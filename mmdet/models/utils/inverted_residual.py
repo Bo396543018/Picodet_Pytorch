@@ -281,7 +281,7 @@ class EnhancedInvertedResidualDS(BaseModule):
         self.conv_dw_1 = ConvModule(
                     in_channels=in_channels,
                     out_channels=in_channels,
-                    kernel_size=3,
+                    kernel_size=kernel_size,
                     stride=stride,
                     padding=1,
                     groups=in_channels,

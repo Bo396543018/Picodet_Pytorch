@@ -3,9 +3,16 @@ model = dict(
     backbone=dict(
         type='ESNet',
         model_size='m',
-        activation='hard_swish',# 'hard_swish',
-        out_stages=[4, 11, 14],
-        pretrain='/mnt/Models/pretrained/mmdet/ESNet_x1_0_pretrained.pth'),
+        out_indices=[4, 11, 14],
+        frozen_stages=-1,
+        norm_cfg=dict(type='BN', requires_grad=True),
+        norm_eval=False,
+        act_cfg=dict(type='HSwish'),
+        se_cfg=dict(conv_cfg=None, 
+                    ratio=4,
+                    act_cfg=(dict(type='ReLU'), dict(type='HSigmoid', bias=3.0, divisor=6.0, max_value=6.0))),
+        init_cfg=dict(type='Pretrained', checkpoint='/mnt/Models/pretrained/mmdet/ESNet_x1_0_pretrained_mmdet_format.pth')),
+
     neck=dict(
         type='CSPPAN',
         in_channels=[128, 256, 512],
@@ -19,11 +26,13 @@ model = dict(
         type='PicoDetHead',
         num_classes=80,
         in_channels=128,
-        stacked_convs=4,
         feat_channels=128,
+        stacked_convs=4,
+        kernel_size=5,
         share_cls_reg=True,
+        use_depthwise=True,
         reg_max=7,
-        activation='HSwish',
+        act_cfg=dict(type='HSwish'),
         strides=[8, 16, 32, 64],
         norm_cfg=dict(type='BN', requires_grad=True),
         use_vfl=True,
@@ -148,5 +157,5 @@ workflow = [('train', 1)]
 
 
 
-work_dir = '/mnt/Models/coco/1126_picodet_m_reproduced'
+work_dir = '/mnt/Models/coco/0111_picodet_m_reproduced_mmdet_style'
 

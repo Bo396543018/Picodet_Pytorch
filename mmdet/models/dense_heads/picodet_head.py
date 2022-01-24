@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-
 import torch
 import torch.nn as nn
 
@@ -30,8 +29,33 @@ from .anchor_free_head import AnchorFreeHead
 
 @HEADS.register_module()
 class PicoDetHead(AnchorFreeHead):
-    """
-    Modified from GFL, use same loss functions but much lightweight convolution heads
+    """PicoDetHead head used in `PicoDet <https://arxiv.org/abs/2111.00902>`_.
+
+    Args:
+        num_classes (int): Number of categories excluding the background
+            category.
+        in_channels (int): Number of channels in the input feature map.
+        feat_channels (int): Number of hidden channels in stacking convs.
+            Default: 96
+        stacked_convs (int): Number of stacking convs of the head.
+            Default: 2.
+        strides (tuple): Downsample factor of each feature map.
+        use_depthwise (bool): Whether to depthwise separable convolutions. 
+            Default: True
+        kernel_size (int): Kernel size of convolution layer. Default: 5
+        share_cls_reg (bool): If ture,reg and cls branch will share weights. 
+            Default: True
+        conv_cfg (dict): Config dict for convolution layer. Default: None.
+        norm_cfg (dict): Config dict for normalization layer. Default: BN
+        act_cfg (dict): Config dict for activation layer. Default: HSwish.
+        use_vfl (bool): Whether use vfl loss for classification. Defualt: True
+        loss_cls (dict): Config of classification loss.
+        loss_dfl (dict): Config of localization loss.
+        reg_max (int): Max value of integral set :math: `{0, ..., reg_max}`
+            in DFL setting. Default: 7.
+        sync_num_pos (bool): If true, synchronize the number of positive
+            examples across GPUs. Default: True
+        init_cfg (dict or list[dict], optional): Initialization config dict.
     """
     def __init__(
         self,
@@ -39,21 +63,23 @@ class PicoDetHead(AnchorFreeHead):
         in_channels,
         feat_channels=96,
         stacked_convs=2,
+        strides=[8, 16, 32, 64],
+        use_depthwise=True,
         kernel_size=5,
         share_cls_reg=True,
-        conv_type="DWConv",
         conv_cfg=None,
         act_cfg=dict(type='HSwish'),
-        norm_cfg=None,
-        use_vfl=False,
+        norm_cfg=dict(type='BN', requires_grad=True),
+        use_vfl=True,
         loss_cls=dict(
-            type='QualityFocalLoss',
+            type='VarifocalLoss',
             use_sigmoid=True,
-            beta=2.0,
+            alpha=0.75,
+            gamma=2.0,
+            iou_weighted=True,
             loss_weight=1.0),
         loss_dfl=dict(type='DistributionFocalLoss', loss_weight=0.25),
         reg_max=7,
-        strides=[8, 16, 32],
         sync_num_pos=True,
         init_cfg=dict(
             type='Normal',
@@ -70,8 +96,7 @@ class PicoDetHead(AnchorFreeHead):
         self.reg_max = reg_max
         self.share_cls_reg = share_cls_reg
         self.act_cfg = act_cfg
-        assert conv_type in ['DWConv', 'Conv'], 'conv_type should be one of DWConv or Conv'
-        self.ConvModule = ConvModule if conv_type == "Conv" else DepthwiseSeparableConvModule
+        self.ConvModule = DepthwiseSeparableConvModule if use_depthwise else ConvModule
         super(PicoDetHead, self).__init__(
             num_classes, in_channels, stacked_convs=stacked_convs, strides=strides,
             feat_channels=feat_channels, loss_cls=loss_cls, norm_cfg=norm_cfg, init_cfg=init_cfg, **kwargs)
@@ -207,12 +232,9 @@ class PicoDetHead(AnchorFreeHead):
             cls_scores (list[Tensor]): Box scores for each scale level,
                 each is a 4D-tensor, the channel number is
                 num_priors * num_classes.
-            bbox_preds (list[Tensor]): Box energies / deltas for each scale
-                level, each is a 4D-tensor, the channel number is
-                num_priors * 4.
-            objectnesses (list[Tensor], Optional): Score factor for
-                all scale level, each is a 4D-tensor, has shape
-                (batch_size, 1, H, W).
+            bbox_preds (list[Tensor]): Box distribution logits for each scale
+                level with shape (N, 4*(n+1), H, W), n is max value of integral
+                set.
             gt_bboxes (list[Tensor]): Ground truth bboxes for each image with
                 shape (num_gts, 4) in [tl_x, tl_y, br_x, br_y] format.
             gt_labels (list[Tensor]): class indices corresponding to each box
@@ -272,18 +294,89 @@ class PicoDetHead(AnchorFreeHead):
             num_pos_avg_per_gpu = max(num_pos_avg_per_gpu, 1.0)
         else:
             num_pos_avg_per_gpu = num_total_pos
-        print(len(center_and_strides_list))
-        loss_bbox_list, loss_dfl_list, loss_cls_list, avg_factor = multi_apply(
-                  self.loss_single(
-                            cls_scores,
-                            bbox_preds,
-                            center_and_strides_list,
-                            labels_list,
-                            label_weights_list,
-                            bbox_targets_list,
-                            self.strides,
-                            num_pos_avg_per_gpu,
-                      ))
+        loss_bbox_list, loss_dfl_list, loss_cls_list, avg_factor = [], [], [], []
+        for cls_score, bbox_pred, center_and_strides, labels, label_weights, bbox_targets, stride in zip(
+                cls_scores, bbox_preds, center_and_strides_list, labels_list,
+                label_weights_list, bbox_targets_list, self.strides):
+            center_and_strides = center_and_strides.reshape(-1, 4)
+            cls_score = cls_score.permute(0, 2, 3, 1).reshape(
+                [-1, self.cls_out_channels]
+            )
+            bbox_pred = bbox_pred.permute(0, 2, 3, 1).reshape(
+                -1, 4 * (self.reg_max + 1)
+            )
+            bbox_targets = bbox_targets.reshape(-1, 4)
+            labels = labels.reshape(-1)
+            label_weights = label_weights.reshape(-1)
+
+            # FG cat_id: [0, num_classes -1], BG cat_id: num_classes
+            bg_class_ind = self.num_classes
+
+            pos_inds = torch.nonzero((labels >= 0)  & (labels < bg_class_ind)).squeeze(1)
+
+            if self.use_vfl:
+                score = label_weights.new_zeros(cls_score.shape)
+            else:
+                score = label_weights.new_zeros(labels.shape)
+
+            if num_total_pos > 0:
+                pos_bbox_targets = bbox_targets[pos_inds]
+                pos_bbox_pred = bbox_pred[pos_inds]
+                pos_centers = center_and_strides[:, :-2][pos_inds] / stride
+
+                weight_targets = cls_score.detach().sigmoid()
+                weight_targets = weight_targets.max(dim=1)[0][pos_inds]
+                pos_bbox_pred_corners = self.integral(pos_bbox_pred)
+                pos_decode_bbox_pred = distance2bbox(pos_centers,
+                                                    pos_bbox_pred_corners)
+                pos_decode_bbox_targets = pos_bbox_targets / stride
+                
+                pos_ious = bbox_overlaps(
+                        pos_decode_bbox_pred,
+                        pos_decode_bbox_targets.detach(),
+                        is_aligned=True).clamp(min=1e-6)
+                if self.use_vfl:
+                    pos_labels = labels[pos_inds]
+                    score[pos_inds, pos_labels] = pos_ious.clone().detach()
+                else:
+                    score[pos_inds] = pos_ious.clone().detach()
+                pred_corners = pos_bbox_pred.reshape(-1, self.reg_max + 1)
+                target_corners = bbox2distance(pos_centers,
+                                            pos_decode_bbox_targets,
+                                            self.reg_max).reshape(-1)
+                # regression loss
+                loss_bbox = self.loss_bbox(
+                    pos_decode_bbox_pred,
+                    pos_decode_bbox_targets.detach(),
+                    weight=weight_targets,
+                    avg_factor=1.0)
+                # dfl loss
+                loss_dfl = self.loss_dfl(
+                    pred_corners,
+                    target_corners,
+                    weight=weight_targets[:, None].expand(-1, 4).reshape(-1),
+                    avg_factor=4.0
+                )
+            else:
+                loss_bbox = bbox_pred.sum() * 0
+                loss_dfl = bbox_pred.sum() * 0
+                weight_targets = bbox_pred.new_tensor(0)
+            # cls (qfl) loss
+            if self.use_vfl:
+                loss_cls = self.loss_cls(
+                    cls_score, 
+                    score, 
+                    avg_factor=num_pos_avg_per_gpu)
+            else:
+                loss_cls = self.loss_cls(
+                    cls_score, (labels, score),
+                    weight=label_weights,
+                    avg_factor=num_pos_avg_per_gpu
+                )
+            loss_bbox_list.append(loss_bbox)
+            loss_dfl_list.append(loss_dfl)
+            loss_cls_list.append(loss_cls)
+            avg_factor.append(weight_targets.sum())
 
         avg_factor = sum(avg_factor)
         avg_factor = reduce_mean(avg_factor).clamp_(min=1).item()
@@ -295,15 +388,17 @@ class PicoDetHead(AnchorFreeHead):
         return losses
         
     @torch.no_grad()
-    def _get_target_single(self, cls_preds, priors, decoded_bboxes,
-                           gt_bboxes, gt_labels):
+    def _get_target_single(self, 
+                           cls_preds, 
+                           priors, 
+                           decoded_bboxes,
+                           gt_bboxes, 
+                           gt_labels):
         """Compute classification, regression, and objectness targets for
         priors in a single image.
         Args:
             cls_preds (Tensor): Classification predictions of one image,
                 a 2D-Tensor with shape [num_priors, num_classes]
-            objectness (Tensor): Objectness predictions of one image,
-                a 1D-Tensor with shape [num_priors]
             priors (Tensor): All priors of one image, a 2D-Tensor with shape
                 [num_priors, 4] in [cx, xy, stride_w, stride_y] format.
             decoded_bboxes (Tensor): Decoded bboxes predictions of one image,
@@ -314,7 +409,6 @@ class PicoDetHead(AnchorFreeHead):
             gt_labels (Tensor): Ground truth labels of one image, a Tensor
                 with shape [num_gts].
         """
-
         num_gts = gt_labels.size(0)
         gt_bboxes = gt_bboxes.to(decoded_bboxes.dtype)
         num_bboxes = decoded_bboxes.shape[0]
@@ -385,8 +479,7 @@ class PicoDetHead(AnchorFreeHead):
         Returns:
             dict[str, Tensor]: A dictionary of loss components   
         """
-        print(len(center_and_strides))
-        print(center_and_strides[0].shape)
+
         center_and_strides = center_and_strides.reshape(-1, 4)
         cls_score = cls_score.permute(0, 2, 3, 1).reshape(
             [-1, self.cls_out_channels]
@@ -463,6 +556,7 @@ class PicoDetHead(AnchorFreeHead):
                 weight=label_weights,
                 avg_factor=num_total_samples
             )
+            print(loss_cls, loss_bbox, loss_dfl, weight_targets.sum())
 
         
         return loss_cls, loss_bbox, loss_dfl, weight_targets.sum()
@@ -557,23 +651,15 @@ class PicoDetHead(AnchorFreeHead):
         multiple images.
 
         Args:
-            anchor_list (list[list[Tensor]]): Multi level anchors of each
-                image. The outer list indicates images, and the inner list
-                corresponds to feature levels of the image. Each element of
-                the inner list is a tensor of shape (num_anchors, 4).
-            valid_flag_list (list[list[Tensor]]): Multi level valid flags of
-                each image. The outer list indicates images, and the inner list
-                corresponds to feature levels of the image. Each element of
-                the inner list is a tensor of shape (num_anchors, )
+            flatten_cls_pred (Tensor) Flattened classification predictions of images.
+            flatten_bboxes (Tensor) Flattened bbox predictions of images.
+            flatten_center_and_strides (Tensor) Flattened anchor center and strides predictions of images
             gt_bboxes_list (list[Tensor]): Ground truth bboxes of each image.
             img_metas (list[dict]): Meta info of each image.
             gt_bboxes_ignore_list (list[Tensor]): Ground truth bboxes to be
                 ignored.
             gt_labels_list (list[Tensor]): Ground truth labels of each box.
-            label_channels (int): Channel of label.
-            unmap_outputs (bool): Whether to map outputs back to the original
-                set of anchors.
-
+            num_level_anchors (list[int]): Number points of each scale. 
         Returns:
             tuple: Usually returns a tuple containing learning targets.
 
@@ -581,10 +667,8 @@ class PicoDetHead(AnchorFreeHead):
                 - label_weights_list (list[Tensor]): Label weights of each
                   level.
                 - bbox_targets_list (list[Tensor]): BBox targets of each level.
-                - bbox_weights_list (list[Tensor]): BBox weights of each level.
+                - center_and_strides_list (list[Tensor]): Center and stride of each level
                 - num_total_pos (int): Number of positive samples in all
-                  images.
-                - num_total_neg (int): Number of negative samples in all
                   images.
 
             additional_returns: This function enables user-defined returns from
@@ -596,7 +680,7 @@ class PicoDetHead(AnchorFreeHead):
 
         for flatten_cls_pred, flatten_center_and_stride, flatten_bbox, gt_bbox, gt_label \
                     in zip(flatten_cls_preds.detach(), flatten_center_and_strides.detach(), \
-                        flatten_bboxes.detach(), gt_bboxes_list, gt_labels_list): # 逐图片
+                        flatten_bboxes.detach(), gt_bboxes_list, gt_labels_list):
             pos_num, label, label_weight, bbox_target = self._get_target_single(
                 flatten_cls_pred, flatten_center_and_stride, flatten_bbox, 
                 gt_bbox, gt_label)
@@ -760,13 +844,6 @@ class PicoDetHead(AnchorFreeHead):
                 with shape (N, num_points * num_classes, H, W).
             bbox_preds (list[Tensor]): Box energies / deltas for each scale
                 level with shape (N, num_points * 4, H, W).
-            score_factors (list[Tensor]): score_factors for each s
-                cale level with shape (N, num_points * 1, H, W).
-                Default: None.
-            img_metas (list[dict]): Meta information of each image, e.g.,
-                image size, scaling factor, etc. Default: None.
-            with_nms (bool): Whether apply nms to the bboxes. Default: True.
-
         Returns:
             tuple[Tensor, Tensor] | list[tuple]: When `with_nms` is True,
             it is tuple[Tensor, Tensor], first tensor bboxes with shape
