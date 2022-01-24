@@ -63,6 +63,9 @@ model = dict(
         max_per_img=100))
 
 # dataset settings
+data_root = 'data/coco/'
+dataset_type = 'CocoDataset'
+
 img_scales = [(256, 256), (288, 288), (320, 320), (352, 352), (384, 384)]
 
 img_norm_cfg = dict(
