@@ -836,7 +836,10 @@ class PicoDetHead(AnchorFreeHead):
     @force_fp32(apply_to=('cls_scores', 'bbox_preds'))
     def onnx_export(self,
                     cls_scores,
-                    bbox_preds):
+                    bbox_preds,
+                    score_factors=None,
+                    img_metas=None,
+                    with_nms=True):
         """Transform network output for a batch into bbox predictions.
 
         Args:
@@ -844,6 +847,13 @@ class PicoDetHead(AnchorFreeHead):
                 with shape (N, num_points * num_classes, H, W).
             bbox_preds (list[Tensor]): Box energies / deltas for each scale
                 level with shape (N, num_points * 4, H, W).
+            score_factors (list[Tensor]): score_factors for each s
+                cale level with shape (N, num_points * 1, H, W).
+                Default: None.
+            img_metas (list[dict]): Meta information of each image, e.g.,
+                image size, scaling factor, etc. Default: None.
+            with_nms (bool): Whether apply nms to the bboxes. Default: True.
+
         Returns:
             tuple[Tensor, Tensor] | list[tuple]: When `with_nms` is True,
             it is tuple[Tensor, Tensor], first tensor bboxes with shape
