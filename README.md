@@ -52,8 +52,32 @@ bash tools/dist_train.sh ./configs/picodet/picodet_s_320_coco.py 4
 ```
 bash tools/dist_test.sh $CONFIG_PATH $TRAINED_MODEL_PATH $GPU_NUMS --eval bbox
 
-eg.
-bash tools/dist_test.sh ./configs/picodet/picodet_s_320_coco.py /mnt/Models/pretrained/mmdet/picodet_s_320.26.9.pth 8 --eval bbox
+eg. use picodet-s 320 pretrianed model
+bash tools/dist_test.sh ./configs/picodet/picodet_s_320_coco.py $MODEL_DIR/picodet_s_320.26.9.pth 8 --eval bbox
+
+Evaluating bbox...
+Loading and preparing results...
+DONE (t=1.76s)
+creating index...
+index created!
+Running per image evaluation...
+Evaluate annotation type *bbox*
+DONE (t=43.50s).
+Accumulating evaluation results...
+DONE (t=14.63s).
+
+ Average Precision  (AP) @[ IoU=0.50:0.95 | area=   all | maxDets=100 ] = 0.269
+ Average Precision  (AP) @[ IoU=0.50      | area=   all | maxDets=1000 ] = 0.408
+ Average Precision  (AP) @[ IoU=0.75      | area=   all | maxDets=1000 ] = 0.279
+ Average Precision  (AP) @[ IoU=0.50:0.95 | area= small | maxDets=1000 ] = 0.076
+ Average Precision  (AP) @[ IoU=0.50:0.95 | area=medium | maxDets=1000 ] = 0.269
+ Average Precision  (AP) @[ IoU=0.50:0.95 | area= large | maxDets=1000 ] = 0.462
+ Average Recall     (AR) @[ IoU=0.50:0.95 | area=   all | maxDets=100 ] = 0.421
+ Average Recall     (AR) @[ IoU=0.50:0.95 | area=   all | maxDets=300 ] = 0.421
+ Average Recall     (AR) @[ IoU=0.50:0.95 | area=   all | maxDets=1000 ] = 0.421
+ Average Recall     (AR) @[ IoU=0.50:0.95 | area= small | maxDets=1000 ] = 0.138
+ Average Recall     (AR) @[ IoU=0.50:0.95 | area=medium | maxDets=1000 ] = 0.470
+ Average Recall     (AR) @[ IoU=0.50:0.95 | area= large | maxDets=1000 ] = 0.684
 ```
 
 
