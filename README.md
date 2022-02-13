@@ -23,7 +23,41 @@
 
 | Bakcbone  | size|box AP(ppdet) | Config|Download
 |:---------:|:-------:|:-------:|:-------:|:-------:|
-|picodet-s|320|26.9(27.1)| [config](https://github.com/open-mmlab/mmdetection/tree/master/configs/picodet/picodet_s_320_coco.py)|[model](https://drive.google.com/file/d/1o6Vxhs9JpiFc87uZA5woaIp8woDHA_jT/view?usp=sharing) \| [log](https://drive.google.com/file/d/1ctIuAbSl1afuiQW0Bkmm82jNh6CR_SOl/view?usp=sharing)|
-|picodet-s|416|30.6(30.6)| [config](https://github.com/open-mmlab/mmdetection/tree/master/configs/picodet/picodet_s_416_coco.py)|[model](https://drive.google.com/file/d/1mnbQ2Fex1v5Hn_MZbZYMZCq6Ol6Bgp4D/view?usp=sharing) \| [log](https://drive.google.com/file/d/1OzPHakomEPFtSmJhf0_Qh35-njHiRJCB/view?usp=sharing)|
-|picodet-m|416|34.2(34.3)| [config](https://github.com/open-mmlab/mmdetection/tree/master/configs/picodet/picodet_m_416_coco.py)|[model](https://drive.google.com/file/d/17jH2kzNBCuKzD39OOYdkyjWcIw9BMpgo/view?usp=sharing) \| [log](https://drive.google.com/file/d/1gIYzoPqRqmoY2-nydedfNz4Mk3TlrRRw/view?usp=sharing)|
-|picodet-l|640|40.4(40.9)| [config](https://github.com/open-mmlab/mmdetection/tree/master/configs/picodet/picodet_l_640_coco.py)|[model](https://drive.google.com/file/d/13x1uMQf8RXlVIjBen7KUxZMHSuUeAWVe/view?usp=sharing) \| [log](https://drive.google.com/file/d/1RWC0128oWtJt825JQBEy5fMnuHrJT-bi/view?usp=sharing)|
+|picodet-s|320|26.9(27.1)| [config](https://github.com/Bo396543018/Picodet_Pytorch/tree/picodet/configs/picodet/picodet_s_320_coco.py)|[model](https://drive.google.com/file/d/1o6Vxhs9JpiFc87uZA5woaIp8woDHA_jT/view?usp=sharing) \| [log](https://drive.google.com/file/d/1ctIuAbSl1afuiQW0Bkmm82jNh6CR_SOl/view?usp=sharing)|
+|picodet-s|416|30.6(30.6)| [config](https://github.com/Bo396543018/Picodet_Pytorch/tree/picodet/configs/picodet/picodet_s_416_coco.py)|[model](https://drive.google.com/file/d/1mnbQ2Fex1v5Hn_MZbZYMZCq6Ol6Bgp4D/view?usp=sharing) \| [log](https://drive.google.com/file/d/1OzPHakomEPFtSmJhf0_Qh35-njHiRJCB/view?usp=sharing)|
+|picodet-m|416|34.2(34.3)| [config](https://github.com/Bo396543018/Picodet_Pytorch/tree/picodet/configs/picodet/picodet_m_416_coco.py)|[model](https://drive.google.com/file/d/17jH2kzNBCuKzD39OOYdkyjWcIw9BMpgo/view?usp=sharing) \| [log](https://drive.google.com/file/d/1gIYzoPqRqmoY2-nydedfNz4Mk3TlrRRw/view?usp=sharing)|
+|picodet-l|640|40.4(40.9)| [config](https://github.com/Bo396543018/Picodet_Pytorch/tree/picodet/configs/picodet/picodet_l_640_coco.py)|[model](https://drive.google.com/file/d/13x1uMQf8RXlVIjBen7KUxZMHSuUeAWVe/view?usp=sharing) \| [log](https://drive.google.com/file/d/1RWC0128oWtJt825JQBEy5fMnuHrJT-bi/view?usp=sharing)|
+
+
+## Usage
+
+### Install MMdetection
+Our implementation is based on mmdetection. 
+Install mmdetection according to [INSTALL](https://github.com/open-mmlab/mmdetection/blob/master/docs/en/get_started.md)
+
+Note: Make sure your mmcv-full version is consistency with mmdet version(we use mmcv==1.4.0)
+
+
+### Train
+
+1. Download pretrained backbone using the link above
+
+2. training
+
+```
+bash tools/dist_train.sh ./configs/picodet/picodet_s_320_coco.py 4
+```
+
+### Test
+```
+bash tools/dist_test.sh $CONFIG_PATH $TRAINED_MODEL_PATH $GPU_NUMS --eval bbox
+
+eg.
+bash tools/dist_test.sh ./configs/picodet/picodet_s_320_coco.py /mnt/Models/pretrained/mmdet/picodet_s_320.26.9.pth 8 --eval bbox
+```
+
+
+## Deploy
+
+TODO：
+- [ ] mnn deploy
